@@ -41,48 +41,50 @@ async fn main() {
 
     let mut game_state = GameState::default();
     loop {
-        while let ControlFlow::Continue(()) = session.next_request(|event| match event {
-            Request::SaveTo(vec) => bincode::serialize_into(vec, &game_state).unwrap(),
-            Request::CaptureLocalInput(vec) => {
-                let input = if is_key_down(KeyCode::Up) {
-                    Some(Action::Increment)
-                } else if is_key_down(KeyCode::Down) {
-                    Some(Action::Decrement)
-                } else {
-                    None
-                };
-                bincode::serialize_into(vec, &input).unwrap();
-            }
-            Request::Advance(dt, inputs) => {
-                game_state.player_cooldowns = game_state
-                    .player_cooldowns
-                    .iter()
-                    .filter_map(|(k, v)| if *v < dt { None } else { Some((*k, *v - dt)) })
-                    .collect();
+        while let ControlFlow::Continue(()) =
+            session.next_request(|request: Request<'_>| match request {
+                Request::SaveTo(vec) => bincode::serialize_into(vec, &game_state).unwrap(),
+                Request::CaptureLocalInput(vec) => {
+                    let input = if is_key_down(KeyCode::Up) {
+                        Some(Action::Increment)
+                    } else if is_key_down(KeyCode::Down) {
+                        Some(Action::Decrement)
+                    } else {
+                        None
+                    };
+                    bincode::serialize_into(vec, &input).unwrap();
+                }
+                Request::Advance(dt, inputs) => {
+                    game_state.player_cooldowns = game_state
+                        .player_cooldowns
+                        .iter()
+                        .filter_map(|(k, v)| if *v < dt { None } else { Some((*k, *v - dt)) })
+                        .collect();
 
-                let inputs: PlayerInputs<Option<Action>> =
-                    inputs.map(|vec| bincode::deserialize_from(&vec[..]).unwrap());
-                for (player_id, action) in inputs.iter() {
-                    let on_cooldown = game_state.player_cooldowns.contains_key(&player_id);
-                    if on_cooldown {
-                        continue;
-                    }
-
-                    if let Some(action) = action {
-                        match action {
-                            Action::Increment => game_state.value += 1,
-                            Action::Decrement => game_state.value -= 1,
+                    let inputs: PlayerInputs<Option<Action>> =
+                        inputs.map(|vec| bincode::deserialize_from(&vec[..]).unwrap());
+                    for (player_id, action) in inputs.iter() {
+                        let on_cooldown = game_state.player_cooldowns.contains_key(&player_id);
+                        if on_cooldown {
+                            continue;
                         }
-                        game_state
-                            .player_cooldowns
-                            .insert(*player_id, Duration::from_millis(300));
+
+                        if let Some(action) = action {
+                            match action {
+                                Action::Increment => game_state.value += 1,
+                                Action::Decrement => game_state.value -= 1,
+                            }
+                            game_state
+                                .player_cooldowns
+                                .insert(*player_id, Duration::from_millis(300));
+                        }
                     }
                 }
-            }
-            unhandled => {
-                panic!("unhandled request: {:?}", unhandled);
-            }
-        }) {}
+                unhandled => {
+                    panic!("unhandled request: {:?}", unhandled);
+                }
+            })
+        {}
 
         draw_text(&format!("{}", game_state.value), 20.0, 20.0, 20.0, WHITE);
 

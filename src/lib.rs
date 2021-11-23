@@ -68,52 +68,56 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn next_request<R>(
+    pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {
+        match self.next_request_flow_inverted(handler) {
+            ControlFlow::Break(m) => ControlFlow::Continue(m),
+            ControlFlow::Continue(()) => ControlFlow::Break(()),
+        }
+    }
+
+    fn next_request_flow_inverted<H: RequestHandler>(
         &mut self,
-        handler: impl FnOnce(Request) -> R,
-    ) -> ControlFlow<Option<R>, R> {
+        mut handler: H,
+    ) -> ControlFlow<H::Break> {
         self.process_incoming_messages();
 
-        match self.frame_state() {
-            None => {
-                let mut state = Vec::new();
-                let ret = handler(Request::SaveTo(&mut state));
-                self.host_at = Some(Duration::ZERO);
-                self.saved_states.insert(Frame(0), state);
-                return ControlFlow::Continue(ret);
-            }
-            Some(FrameState::At(frame)) => {
-                let inputs = match self.inputs(frame) {
-                    Some(i) => i,
-                    None => {
-                        let mut input = Vec::new();
-                        let ret = handler(Request::CaptureLocalInput(&mut input));
+        let frame = self.current_frame(&mut handler)?;
 
-                        assert!(
-                            !self.saved_inputs.contains_key(&frame),
-                            "overrode inputs for frame {:?}",
-                            frame
-                        );
-
-                        self.send(Message::Input(frame, &input[..]));
-                        self.saved_inputs
-                            .insert(frame, PlayerInputs::just_local(self.local_index, input));
-
-                        return ControlFlow::Continue(ret);
-                    }
-                };
+        match frame {
+            FrameState::At(frame) => {
+                let inputs = self.inputs(frame, &mut handler)?;
 
                 let next_frame = frame + 1;
                 if self.started_at.elapsed() > (self.step_size * next_frame.0) {
-                    let ret = handler(Request::Advance(self.step_size, inputs));
-                    *self.host_at.as_mut().unwrap() += self.step_size;
-                    return ControlFlow::Continue(ret);
+                    handler
+                        .handle_request(Request::Advance(self.step_size, inputs))
+                        .always(|| {
+                            *self.host_at.as_mut().unwrap() += self.step_size;
+                        })?;
                 }
             }
-            Some(FrameState::After(_)) => unimplemented!("FrameState::After"),
+            FrameState::After(_) => unimplemented!("FrameState::After"),
         }
 
-        ControlFlow::Break(None)
+        ControlFlow::Continue(())
+    }
+
+    fn current_frame<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break, FrameState> {
+        if let Some(f) = self.frame_state() {
+            return ControlFlow::Continue(f);
+        }
+
+        let mut state = Vec::new();
+        handler
+            .handle_request(Request::SaveTo(&mut state))
+            .always(|| {
+                self.host_at = Some(Duration::ZERO);
+                self.saved_states.insert(Frame(0), state);
+                FrameState::At(Frame(0))
+            })
     }
 
     fn frame_state(&self) -> Option<FrameState> {
@@ -152,8 +156,24 @@ impl Session {
         Some(FrameState::After(Frame(min)))
     }
 
-    fn inputs(&self, at: Frame) -> Option<PlayerInputs> {
-        self.saved_inputs.get(&at).cloned()
+    fn inputs<H: RequestHandler>(
+        &mut self,
+        at: Frame,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break, PlayerInputs> {
+        if let Some(i) = self.saved_inputs.get(&at).cloned() {
+            return ControlFlow::Continue(i);
+        }
+
+        let mut input = Vec::new();
+        handler
+            .handle_request(Request::CaptureLocalInput(&mut input))
+            .always(|| {
+                self.send(Message::Input(at, &input[..]));
+                let inputs = PlayerInputs::just_local(self.local_index, input);
+                self.saved_inputs.insert(at, inputs.clone());
+                inputs
+            })
     }
 
     fn send(&mut self, message: Message) {
@@ -191,6 +211,77 @@ impl Session {
     }
 }
 
+pub trait RequestHandler {
+    type Break;
+
+    fn handle_request(&mut self, request: Request) -> ControlFlow<Self::Break>;
+}
+
+impl<F, M> RequestHandler for F
+where
+    F: FnMut(Request) -> M,
+    M: MaybeMessage,
+{
+    type Break = M::Message;
+
+    fn handle_request(&mut self, request: Request) -> ControlFlow<Self::Break> {
+        if let Some(m) = self(request).as_message() {
+            ControlFlow::Break(m)
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+}
+
+pub trait MaybeMessage {
+    type Message;
+
+    fn as_message(self) -> Option<Self::Message>;
+}
+
+impl<M> MaybeMessage for ControlFlow<M> {
+    type Message = M;
+
+    fn as_message(self) -> Option<Self::Message> {
+        match self {
+            ControlFlow::Break(m) => Some(m),
+            ControlFlow::Continue(()) => None,
+        }
+    }
+}
+
+impl<M> MaybeMessage for Option<M> {
+    type Message = M;
+
+    fn as_message(self) -> Option<Self::Message> {
+        self
+    }
+}
+
+impl MaybeMessage for () {
+    // TODO(shelbyd): Should be never (!).
+    type Message = ();
+
+    fn as_message(self) -> Option<Self::Message> {
+        None
+    }
+}
+
+trait ControlFlowExt {
+    type Break;
+    fn always<R>(self, f: impl FnOnce() -> R) -> ControlFlow<Self::Break, R>;
+}
+
+impl<B> ControlFlowExt for ControlFlow<B> {
+    type Break = B;
+
+    fn always<R>(self, f: impl FnOnce() -> R) -> ControlFlow<B, R> {
+        let ret = f();
+        self?;
+        ControlFlow::Continue(ret)
+    }
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Request<'s> {
@@ -225,7 +316,11 @@ impl<T> PlayerInputs<T> {
 
     fn insert(&mut self, at: PlayerId, val: T) {
         let already = self.map.insert(at, val);
-        assert!(already.is_none(), "inserted duplicate input for player {}", at);
+        assert!(
+            already.is_none(),
+            "inserted duplicate input for player {}",
+            at
+        );
     }
 }
 
