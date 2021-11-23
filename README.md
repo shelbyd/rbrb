@@ -23,6 +23,7 @@ state is consitent between players and deterministic on the same logical update.
 
 - [ ] Determinism checks
 - [ ] Checksum propagation
+- [ ] Debugging failed checks
 - [ ] Fake a bad network
 - [ ] Confirmation state
 
@@ -31,8 +32,12 @@ state is consitent between players and deterministic on the same logical update.
 - [ ] In-game replays
 - [ ] Out of game replays
   - [ ] Headless
+- [ ] Spectators
+  - [ ] Drop in/out
 
 ### Performance
 
 - [ ] Input delta encoding
 - [ ] Hub and spoke network
+
+License: MIT

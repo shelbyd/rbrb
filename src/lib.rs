@@ -21,6 +21,7 @@
 //!
 //! - [ ] Determinism checks
 //! - [ ] Checksum propagation
+//! - [ ] Debugging failed checks
 //! - [ ] Fake a bad network
 //! - [ ] Confirmation state
 //!
@@ -29,6 +30,8 @@
 //! - [ ] In-game replays
 //! - [ ] Out of game replays
 //!   - [ ] Headless
+//! - [ ] Spectators
+//!   - [ ] Drop in/out
 //!
 //! ## Performance
 //!

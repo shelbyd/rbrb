@@ -1,8 +1,11 @@
 [package]
 name = "rbrb"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Shelby Doolittle <shelby@shelbyd.com>"]
+description = "Write robust rollback networked games"
+license = "MIT"
+repository = "https://github.com/shelbyd/rbrb"
 
 [dependencies]
