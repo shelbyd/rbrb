@@ -30,12 +30,13 @@ enum Action {
 
 #[macroquad::main("Basic RbRb")]
 async fn main() {
+    env_logger::init();
     let options = Options::from_args();
 
     let mut session = SessionBuilder::default()
         .remote_players(&options.remote_players)
         .local_player(options.local_index, options.local_port)
-        .step_size(Duration::from_millis(16))
+        .step_size(Duration::from_millis(17))
         .start()
         .unwrap();
 
@@ -44,6 +45,13 @@ async fn main() {
         while let ControlFlow::Continue(()) =
             session.next_request(|request: Request<'_>| match request {
                 Request::SaveTo(vec) => bincode::serialize_into(vec, &game_state).unwrap(),
+                Request::LoadFrom(buf) => {
+                    match bincode::deserialize(buf) {
+                        Ok(s) => game_state = s,
+                        // Need to handle parsing errors as state could be from malicious peers.
+                        Err(_) => {}
+                    }
+                }
                 Request::CaptureLocalInput(vec) => {
                     let input = if is_key_down(KeyCode::Up) {
                         Some(Action::Increment)
@@ -54,7 +62,9 @@ async fn main() {
                     };
                     bincode::serialize_into(vec, &input).unwrap();
                 }
-                Request::Advance(dt, inputs) => {
+                Request::Advance {
+                    amount: dt, inputs, ..
+                } => {
                     game_state.player_cooldowns = game_state
                         .player_cooldowns
                         .iter()

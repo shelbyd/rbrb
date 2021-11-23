@@ -40,6 +40,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     ops::ControlFlow,
@@ -55,20 +56,23 @@ pub type SimulationInstant = Duration;
 pub type PlayerId = u16;
 
 pub struct Session {
-    saved_states: BTreeMap<Frame, SerializedState>,
+    confirmed_states: BTreeMap<Frame, SerializedState>,
     saved_inputs: BTreeMap<Frame, PlayerInputs>,
 
     step_size: Duration,
     local_index: PlayerId,
     remote_players: HashMap<SocketAddr, PlayerId>,
+    socket: Box<dyn NonBlockingSocket>,
 
     started_at: Instant,
-    host_at: Option<SimulationInstant>,
-    socket: Box<dyn NonBlockingSocket>,
+    host_at: SimulationInstant,
+    unconfirmed: Frame,
 }
 
 impl Session {
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {
+        self.process_incoming_messages();
+
         match self.next_request_flow_inverted(handler) {
             ControlFlow::Break(m) => ControlFlow::Continue(m),
             ControlFlow::Continue(()) => ControlFlow::Break(()),
@@ -79,52 +83,180 @@ impl Session {
         &mut self,
         mut handler: H,
     ) -> ControlFlow<H::Break> {
-        self.process_incoming_messages();
+        // TODO(shelbyd): Wait for all players to connect to start the simulation.
+        self.save_frame_zero(&mut handler)?;
+        self.capture_inputs(&mut handler)?;
+        self.advance_confirmed_horizon(&mut handler)?;
 
-        let frame = self.current_frame(&mut handler)?;
-
-        match frame {
-            FrameState::At(frame) => {
-                let inputs = self.inputs(frame, &mut handler)?;
-
-                let next_frame = frame + 1;
-                if self.started_at.elapsed() > (self.step_size * next_frame.0) {
-                    handler
-                        .handle_request(Request::Advance(self.step_size, inputs))
-                        .always(|| {
-                            *self.host_at.as_mut().unwrap() += self.step_size;
-                        })?;
-                }
+        match (self.frame_state(), self.realtime_frame()) {
+            (host, realtime) if host.into_frame() > realtime => {
+                unreachable!("progressed too far: {:?} > {:?}", host, realtime)
             }
-            FrameState::After(_) => unimplemented!("FrameState::After"),
+            (FrameState::At(frame), realtime) if frame < realtime => {
+                self.try_advance(&mut handler)?;
+            }
+            (FrameState::At(frame), realtime) if frame == realtime => {}
+
+            unhandled => unimplemented!("unhandled: {:?}", unhandled),
         }
 
         ControlFlow::Continue(())
     }
 
-    fn current_frame<H: RequestHandler>(
-        &mut self,
-        handler: &mut H,
-    ) -> ControlFlow<H::Break, FrameState> {
-        if let Some(f) = self.frame_state() {
-            return ControlFlow::Continue(f);
+    fn save_frame_zero<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
+        if self.confirmed_states.len() > 0 {
+            return ControlFlow::Continue(());
         }
 
         let mut state = Vec::new();
         handler
             .handle_request(Request::SaveTo(&mut state))
             .always(|| {
-                self.host_at = Some(Duration::ZERO);
-                self.saved_states.insert(Frame(0), state);
-                FrameState::At(Frame(0))
+                self.confirmed_states.insert(Frame(0), state);
             })
     }
 
-    fn frame_state(&self) -> Option<FrameState> {
-        // TODO(shelbyd): Extract into algorithms crate.
-        use core::cmp::Ordering;
+    fn capture_inputs<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
+        let frame = self.realtime_frame();
+        if self.saved_inputs.contains_key(&frame) {
+            return ControlFlow::Continue(());
+        }
 
-        let at = self.host_at?;
+        let mut input = Vec::new();
+        handler
+            .handle_request(Request::CaptureLocalInput(&mut input))
+            .always(|| loop {
+                let insert_into_frame = self
+                    .saved_inputs
+                    .range(..)
+                    .next_back()
+                    .map(|(f, _)| *f + 1)
+                    .unwrap_or(Frame(0));
+                self.send(Message::Input(insert_into_frame, &input[..]));
+                let inputs = PlayerInputs::just_local(self.local_index, input.clone());
+                self.saved_inputs.insert(insert_into_frame, inputs);
+                if insert_into_frame == frame {
+                    break;
+                } else {
+                    log::warn!("missed input for frame {:?}", insert_into_frame);
+                }
+            })
+    }
+
+    fn advance_confirmed_horizon<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break> {
+        let last_confirmed = self.unconfirmed - 1;
+        let should_advance = self.frame_state().into_frame() < self.realtime_frame();
+        if !should_advance {
+            return ControlFlow::Continue(());
+        }
+
+        match self.saved_inputs.get(&last_confirmed) {
+            None => {}
+            Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {}
+            Some(inputs) => {
+                let inputs = inputs.clone();
+                self.navigate_to(last_confirmed, handler)?;
+
+                self.advance_with(inputs, handler, true)
+                    .always(|| self.unconfirmed = self.unconfirmed + 1)?;
+            }
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    fn navigate_to<H: RequestHandler>(
+        &mut self,
+        frame: Frame,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break> {
+        loop {
+            match self.frame_state().into_frame().cmp(&frame) {
+                Ordering::Equal => return ControlFlow::Continue(()),
+                Ordering::Greater => {
+                    let (current_frame, state) =
+                        self.confirmed_states.range(..=frame).next_back().unwrap();
+                    handler
+                        .handle_request(Request::LoadFrom(&state))
+                        .always(|| {
+                            self.host_at = self.step_size * current_frame.0;
+                        })?;
+                }
+                Ordering::Less => {
+                    self.do_advance(handler)?;
+                }
+            }
+        }
+    }
+
+    fn advance_with<H: RequestHandler>(
+        &mut self,
+        inputs: PlayerInputs,
+        handler: &mut H,
+        first_confirm: bool,
+    ) -> ControlFlow<H::Break> {
+        handler
+            .handle_request(Request::Advance {
+                amount: self.step_size,
+                confirmed: if first_confirm {
+                    Confirmation::First
+                } else if inputs.is_complete(self.remote_players.len()) {
+                    Confirmation::Subsequent
+                } else {
+                    Confirmation::Unconfirmed
+                },
+                inputs,
+            })
+            .always(|| {
+                self.host_at += self.step_size;
+            })
+    }
+
+    fn do_advance<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break> {
+        let frame = match self.frame_state() {
+            FrameState::At(f) => f,
+            FrameState::After(_) => unimplemented!("FrameState::After"),
+        };
+        let inputs = self
+            .inputs(frame)
+            .expect(&format!("did not have inputs for frame: {:?}", frame));
+
+        self.advance_with(inputs, handler, false)
+    }
+
+    fn try_advance<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break> {
+        let frame = match self.frame_state() {
+            FrameState::At(f) => f,
+            FrameState::After(_) => unimplemented!("FrameState::After"),
+        };
+
+        if let Some(inputs) = self.inputs(frame) {
+            self.advance_with(inputs, handler, false)?;
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn realtime_frame(&self) -> Frame {
+        self.calculate_frame_state(self.started_at.elapsed())
+            .into_frame()
+    }
+
+    fn frame_state(&self) -> FrameState {
+        self.calculate_frame_state(self.host_at)
+    }
+
+    fn calculate_frame_state(&self, at: Duration) -> FrameState {
+        // TODO(shelbyd): Extract into algorithms crate.
+
         let step = self.step_size;
 
         let mut min = 0;
@@ -132,7 +264,7 @@ impl Session {
 
         loop {
             if step * min == at {
-                return Some(FrameState::At(Frame(min)));
+                return FrameState::At(Frame(min));
             }
             if step * max > at {
                 break;
@@ -144,7 +276,7 @@ impl Session {
         while max - min > 1 {
             let mid = min + (max - min) / 2;
             match (step * mid).cmp(&at) {
-                Ordering::Equal => return Some(FrameState::At(Frame(mid))),
+                Ordering::Equal => return FrameState::At(Frame(mid)),
                 Ordering::Greater => {
                     max = mid;
                 }
@@ -153,27 +285,11 @@ impl Session {
                 }
             }
         }
-        Some(FrameState::After(Frame(min)))
+        FrameState::After(Frame(min))
     }
 
-    fn inputs<H: RequestHandler>(
-        &mut self,
-        at: Frame,
-        handler: &mut H,
-    ) -> ControlFlow<H::Break, PlayerInputs> {
-        if let Some(i) = self.saved_inputs.get(&at).cloned() {
-            return ControlFlow::Continue(i);
-        }
-
-        let mut input = Vec::new();
-        handler
-            .handle_request(Request::CaptureLocalInput(&mut input))
-            .always(|| {
-                self.send(Message::Input(at, &input[..]));
-                let inputs = PlayerInputs::just_local(self.local_index, input);
-                self.saved_inputs.insert(at, inputs.clone());
-                inputs
-            })
+    fn inputs(&self, at: Frame) -> Option<PlayerInputs> {
+        self.saved_inputs.get(&at).cloned()
     }
 
     fn send(&mut self, message: Message) {
@@ -286,8 +402,21 @@ impl<B> ControlFlowExt for ControlFlow<B> {
 #[non_exhaustive]
 pub enum Request<'s> {
     SaveTo(&'s mut SerializedState),
-    Advance(Duration, PlayerInputs),
+    LoadFrom(&'s [u8]),
+    #[non_exhaustive]
+    Advance {
+        amount: Duration,
+        inputs: PlayerInputs,
+        confirmed: Confirmation,
+    },
     CaptureLocalInput(&'s mut SerializedInput),
+}
+
+#[derive(Debug)]
+pub enum Confirmation {
+    Unconfirmed,
+    First,
+    Subsequent,
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +429,13 @@ impl PlayerInputs {
         let mut map = HashMap::default();
         map.insert(local_index, input);
         PlayerInputs { map }
+    }
+
+    fn is_complete(&self, remote_count: usize) -> bool {
+        let should_have = remote_count + 1;
+        let len = self.map.len();
+        assert!(len <= should_have);
+        len == should_have
     }
 }
 
@@ -335,10 +471,26 @@ impl core::ops::Add<u32> for Frame {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+impl core::ops::Sub<u32> for Frame {
+    type Output = Frame;
+    fn sub(self, other: u32) -> Frame {
+        Frame(self.0 - other)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FrameState {
     At(Frame),
     After(Frame),
+}
+
+impl FrameState {
+    fn into_frame(self) -> Frame {
+        match self {
+            FrameState::At(f) => f,
+            FrameState::After(f) => f,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -387,14 +539,15 @@ impl SessionBuilder {
             .collect();
 
         Ok(Session {
-            saved_states: BTreeMap::default(),
+            confirmed_states: BTreeMap::default(),
             saved_inputs: BTreeMap::default(),
-            host_at: None,
+            host_at: Duration::ZERO,
             started_at: Instant::now(),
             step_size: self.step_size.ok_or("must provide step_size")?,
             local_index,
             socket: Box::new(socket::BasicUdpSocket::bind(port).unwrap()),
             remote_players,
+            unconfirmed: Frame(1),
         })
     }
 }
