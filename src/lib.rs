@@ -38,6 +38,7 @@
 //! - [ ] Input delta encoding
 //! - [ ] Hub and spoke network
 
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
@@ -45,20 +46,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod socket;
+pub use socket::NonBlockingSocket;
+
 pub type SerializedState = Vec<u8>;
 pub type SerializedInput = Vec<u8>;
 pub type SimulationInstant = Duration;
 pub type PlayerId = u16;
 
 pub struct Session {
-    saved_states: BTreeMap<SimulationInstant, SerializedState>,
-    saved_inputs: BTreeMap<SimulationInstant, PlayerInputs>,
+    saved_states: BTreeMap<Frame, SerializedState>,
+    saved_inputs: BTreeMap<Frame, PlayerInputs>,
 
     step_size: Duration,
     local_index: PlayerId,
+    remote_players: HashMap<SocketAddr, PlayerId>,
 
     started_at: Instant,
     host_at: Option<SimulationInstant>,
+    socket: Box<dyn NonBlockingSocket>,
 }
 
 impl Session {
@@ -66,39 +72,122 @@ impl Session {
         &mut self,
         handler: impl FnOnce(Request) -> R,
     ) -> ControlFlow<Option<R>, R> {
-        let host_at = match self.host_at {
-            Some(h) => h,
+        self.process_incoming_messages();
+
+        match self.frame_state() {
             None => {
                 let mut state = Vec::new();
                 let ret = handler(Request::SaveTo(&mut state));
                 self.host_at = Some(Duration::ZERO);
-                self.saved_states.insert(Duration::ZERO, state);
+                self.saved_states.insert(Frame(0), state);
                 return ControlFlow::Continue(ret);
             }
-        };
+            Some(FrameState::At(frame)) => {
+                let inputs = match self.inputs(frame) {
+                    Some(i) => i,
+                    None => {
+                        let mut input = Vec::new();
+                        let ret = handler(Request::CaptureLocalInput(&mut input));
 
-        if self.started_at.elapsed() > (host_at + self.step_size) {
-            let inputs = match self.inputs(host_at) {
-                Some(i) => i,
-                None => {
-                    let mut input = Vec::new();
-                    let ret = handler(Request::CaptureLocalInput(&mut input));
-                    self.saved_inputs
-                        .insert(host_at, PlayerInputs::just_local(self.local_index, input));
+                        assert!(
+                            !self.saved_inputs.contains_key(&frame),
+                            "overrode inputs for frame {:?}",
+                            frame
+                        );
+
+                        self.send(Message::Input(frame, &input[..]));
+                        self.saved_inputs
+                            .insert(frame, PlayerInputs::just_local(self.local_index, input));
+
+                        return ControlFlow::Continue(ret);
+                    }
+                };
+
+                let next_frame = frame + 1;
+                if self.started_at.elapsed() > (self.step_size * next_frame.0) {
+                    let ret = handler(Request::Advance(self.step_size, inputs));
+                    *self.host_at.as_mut().unwrap() += self.step_size;
                     return ControlFlow::Continue(ret);
                 }
-            };
-
-            let ret = handler(Request::Advance(self.step_size, inputs));
-            *self.host_at.as_mut().unwrap() += self.step_size;
-            return ControlFlow::Continue(ret);
+            }
+            Some(FrameState::After(_)) => unimplemented!("FrameState::After"),
         }
 
         ControlFlow::Break(None)
     }
 
-    fn inputs(&self, at: SimulationInstant) -> Option<PlayerInputs> {
+    fn frame_state(&self) -> Option<FrameState> {
+        // TODO(shelbyd): Extract into algorithms crate.
+        use core::cmp::Ordering;
+
+        let at = self.host_at?;
+        let step = self.step_size;
+
+        let mut min = 0;
+        let mut max = 1;
+
+        loop {
+            if step * min == at {
+                return Some(FrameState::At(Frame(min)));
+            }
+            if step * max > at {
+                break;
+            }
+            min = max;
+            max *= 2;
+        }
+
+        while max - min > 1 {
+            let mid = min + (max - min) / 2;
+            match (step * mid).cmp(&at) {
+                Ordering::Equal => return Some(FrameState::At(Frame(mid))),
+                Ordering::Greater => {
+                    max = mid;
+                }
+                Ordering::Less => {
+                    min = mid;
+                }
+            }
+        }
+        Some(FrameState::After(Frame(min)))
+    }
+
+    fn inputs(&self, at: Frame) -> Option<PlayerInputs> {
         self.saved_inputs.get(&at).cloned()
+    }
+
+    fn send(&mut self, message: Message) {
+        let message = bincode::serialize(&message).expect("failed to serialize message");
+        for player in self.remote_players.keys() {
+            self.socket.send(&message, *player);
+        }
+    }
+
+    fn process_incoming_messages(&mut self) {
+        while let Some((addr, buffer)) = self.socket.recv() {
+            let player = match self.remote_players.get(&addr) {
+                Some(p) => p,
+                None => {
+                    log::warn!("got message from non-player: {}", addr);
+                    continue;
+                }
+            };
+            let message = match bincode::deserialize(buffer) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::warn!("failed to decode message: {:?}", e);
+                    continue;
+                }
+            };
+            match message {
+                Message::Input(frame, input) => {
+                    self.saved_inputs
+                        .get_mut(&frame)
+                        .unwrap()
+                        .insert(*player, input.to_vec());
+                }
+            }
+        }
     }
 }
 
@@ -133,6 +222,33 @@ impl<T> PlayerInputs<T> {
     pub fn iter(&self) -> impl Iterator<Item = (&PlayerId, &T)> {
         self.map.iter()
     }
+
+    fn insert(&mut self, at: PlayerId, val: T) {
+        let already = self.map.insert(at, val);
+        assert!(already.is_none(), "inserted duplicate input for player {}", at);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Frame(u32);
+
+impl core::ops::Add<u32> for Frame {
+    type Output = Frame;
+    fn add(self, other: u32) -> Frame {
+        Frame(self.0 + other)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FrameState {
+    At(Frame),
+    After(Frame),
+}
+
+#[derive(Serialize, Deserialize)]
+enum Message<'i> {
+    Input(Frame, &'i [u8]),
 }
 
 #[derive(Default)]
@@ -159,7 +275,21 @@ impl SessionBuilder {
     }
 
     pub fn start(&mut self) -> Result<Session, String> {
-        let (local_index, _port) = self.local_player.ok_or("must provide local_player")?;
+        let (local_index, port) = self.local_player.ok_or("must provide local_player")?;
+
+        let remote_players = self
+            .remote_players
+            .iter()
+            .enumerate()
+            .map(|(i, &addr)| {
+                let i = i as u16;
+                if i >= local_index {
+                    (addr, i + 1)
+                } else {
+                    (addr, i)
+                }
+            })
+            .collect();
 
         Ok(Session {
             saved_states: BTreeMap::default(),
@@ -168,6 +298,8 @@ impl SessionBuilder {
             started_at: Instant::now(),
             step_size: self.step_size.ok_or("must provide step_size")?,
             local_index,
+            socket: Box::new(socket::BasicUdpSocket::bind(port).unwrap()),
+            remote_players,
         })
     }
 }
