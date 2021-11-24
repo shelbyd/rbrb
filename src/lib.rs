@@ -47,6 +47,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod exponential_keeping;
 mod socket;
 pub use socket::NonBlockingSocket;
 
@@ -119,6 +120,25 @@ impl Session {
                 .always(|| {
                     self.confirmed_states.insert(Frame(0), state);
                 })?;
+        }
+
+        let frame = self.frame_state().into_frame();
+        let kept = exponential_keeping::kept_set((self.unconfirmed - 1).0);
+        if kept.contains(&frame.0) {
+            if let None = self.confirmed_states.get(&frame) {
+                let mut state = Vec::new();
+                handler
+                    .handle_request(Request::SaveTo(&mut state))
+                    .always(|| {
+                        self.confirmed_states.insert(frame, state);
+
+                        for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
+                            if !kept.contains(&key.0) {
+                                self.confirmed_states.remove(&key);
+                            }
+                        }
+                    })?;
+            }
         }
 
         ControlFlow::Continue(())
