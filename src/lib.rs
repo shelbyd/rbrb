@@ -83,37 +83,45 @@ impl Session {
         &mut self,
         mut handler: H,
     ) -> ControlFlow<H::Break> {
-        // TODO(shelbyd): Wait for all players to connect to start the simulation.
-        self.save_frame_zero(&mut handler)?;
-        self.capture_inputs(&mut handler)?;
-        self.advance_confirmed_horizon(&mut handler)?;
+        loop {
+            // TODO(shelbyd): Wait for all players to connect to start the simulation.
+            self.capture_inputs(&mut handler)?;
+            self.save_confirmed_frames(&mut handler)?;
+            self.advance_confirmed_horizon(&mut handler)?;
 
-        match (self.frame_state(), self.realtime_frame()) {
-            (host, realtime) if host.into_frame() > realtime => {
-                unreachable!("progressed too far: {:?} > {:?}", host, realtime)
+            let frame = self.frame_state();
+            match (frame.into_frame().cmp(&self.realtime_frame()), frame) {
+                (Ordering::Greater, f) => {
+                    unreachable!("advanced too far: {:?} > {:?}", f, self.realtime_frame());
+                }
+                (Ordering::Equal, _) => return ControlFlow::Continue(()),
+                (Ordering::Less, FrameState::At(_)) => {
+                    self.try_advance(&mut handler, self.step_size)?;
+                    // TODO(shelbyd): Do partial advance?
+                }
+                (Ordering::Less, FrameState::After(f)) => {
+                    self.navigate_to(f, &mut handler)?;
+                    self.try_advance(&mut handler, self.step_size)?;
+                    // TODO(shelbyd): Do partial advance?
+                }
             }
-            (FrameState::At(frame), realtime) if frame < realtime => {
-                self.try_advance(&mut handler)?;
-            }
-            (FrameState::At(frame), realtime) if frame == realtime => {}
+        }
+    }
 
-            unhandled => unimplemented!("unhandled: {:?}", unhandled),
+    fn save_confirmed_frames<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break> {
+        if self.confirmed_states.len() == 0 {
+            let mut state = Vec::new();
+            handler
+                .handle_request(Request::SaveTo(&mut state))
+                .always(|| {
+                    self.confirmed_states.insert(Frame(0), state);
+                })?;
         }
 
         ControlFlow::Continue(())
-    }
-
-    fn save_frame_zero<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
-        if self.confirmed_states.len() > 0 {
-            return ControlFlow::Continue(());
-        }
-
-        let mut state = Vec::new();
-        handler
-            .handle_request(Request::SaveTo(&mut state))
-            .always(|| {
-                self.confirmed_states.insert(Frame(0), state);
-            })
     }
 
     fn capture_inputs<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
@@ -160,7 +168,7 @@ impl Session {
                 let inputs = inputs.clone();
                 self.navigate_to(last_confirmed, handler)?;
 
-                self.advance_with(inputs, handler, true)
+                self.advance_with(inputs, handler, self.step_size, true)
                     .always(|| self.unconfirmed = self.unconfirmed + 1)?;
             }
         }
@@ -196,11 +204,12 @@ impl Session {
         &mut self,
         inputs: PlayerInputs,
         handler: &mut H,
+        amount: Duration,
         first_confirm: bool,
     ) -> ControlFlow<H::Break> {
         handler
             .handle_request(Request::Advance {
-                amount: self.step_size,
+                amount,
                 confirmed: if first_confirm {
                     Confirmation::First
                 } else if inputs.is_complete(self.remote_players.len()) {
@@ -210,15 +219,10 @@ impl Session {
                 },
                 inputs,
             })
-            .always(|| {
-                self.host_at += self.step_size;
-            })
+            .always(|| self.host_at += amount)
     }
 
-    fn do_advance<H: RequestHandler>(
-        &mut self,
-        handler: &mut H,
-    ) -> ControlFlow<H::Break> {
+    fn do_advance<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
         let frame = match self.frame_state() {
             FrameState::At(f) => f,
             FrameState::After(_) => unimplemented!("FrameState::After"),
@@ -227,12 +231,13 @@ impl Session {
             .inputs(frame)
             .expect(&format!("did not have inputs for frame: {:?}", frame));
 
-        self.advance_with(inputs, handler, false)
+        self.advance_with(inputs, handler, self.step_size, false)
     }
 
     fn try_advance<H: RequestHandler>(
         &mut self,
         handler: &mut H,
+        amount: Duration,
     ) -> ControlFlow<H::Break> {
         let frame = match self.frame_state() {
             FrameState::At(f) => f,
@@ -240,7 +245,7 @@ impl Session {
         };
 
         if let Some(inputs) = self.inputs(frame) {
-            self.advance_with(inputs, handler, false)?;
+            self.advance_with(inputs, handler, amount, false)?;
         }
         ControlFlow::Continue(())
     }

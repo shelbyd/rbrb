@@ -42,8 +42,8 @@ async fn main() {
 
     let mut game_state = GameState::default();
     loop {
-        while let ControlFlow::Continue(()) =
-            session.next_request(|request: Request<'_>| match request {
+        while let ControlFlow::Continue(()) = session.next_request(|request: Request<'_>| {
+            match request {
                 Request::SaveTo(vec) => bincode::serialize_into(vec, &game_state).unwrap(),
                 Request::LoadFrom(buf) => {
                     match bincode::deserialize(buf) {
@@ -93,8 +93,8 @@ async fn main() {
                 unhandled => {
                     panic!("unhandled request: {:?}", unhandled);
                 }
-            })
-        {}
+            }
+        }) {}
 
         draw_text(&format!("{}", game_state.value), 20.0, 20.0, 20.0, WHITE);
 
