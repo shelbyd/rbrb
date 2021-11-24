@@ -166,7 +166,7 @@ impl Session {
                 if insert_into_frame == frame {
                     break;
                 } else {
-                    log::warn!("missed input for frame {:?}", insert_into_frame);
+                    log::warn!("missed capturing input for frame {:?}", insert_into_frame);
                 }
             })
     }
@@ -183,7 +183,9 @@ impl Session {
 
         match self.saved_inputs.get(&last_confirmed) {
             None => {}
-            Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {}
+            Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {
+                log::debug!("incomplete inputs: {:?}", last_confirmed);
+            }
             Some(inputs) => {
                 let inputs = inputs.clone();
                 self.navigate_to(last_confirmed, handler)?;
@@ -205,12 +207,13 @@ impl Session {
             match self.frame_state().into_frame().cmp(&frame) {
                 Ordering::Equal => return ControlFlow::Continue(()),
                 Ordering::Greater => {
-                    let (current_frame, state) =
+                    let (roll_to, state) =
                         self.confirmed_states.range(..=frame).next_back().unwrap();
+                    log::debug!("rolling back to {:?}", roll_to);
                     handler
                         .handle_request(Request::LoadFrom(&state))
                         .always(|| {
-                            self.host_at = self.step_size * current_frame.0;
+                            self.host_at = self.step_size * roll_to.0;
                         })?;
                 }
                 Ordering::Less => {
@@ -340,11 +343,12 @@ impl Session {
                     continue;
                 }
             };
+            log::debug!("(player, message): {:?}", (player, &message));
             match message {
                 Message::Input(frame, input) => {
                     self.saved_inputs
-                        .get_mut(&frame)
-                        .unwrap()
+                        .entry(frame)
+                        .or_default()
                         .insert(*player, input.to_vec());
                 }
             }
@@ -444,7 +448,7 @@ pub enum Confirmation {
     Subsequent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PlayerInputs<T = SerializedInput> {
     map: HashMap<PlayerId, T>,
 }
@@ -518,7 +522,7 @@ impl FrameState {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 enum Message<'i> {
     Input(Frame, &'i [u8]),
 }

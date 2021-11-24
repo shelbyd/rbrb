@@ -19,7 +19,7 @@ impl BasicUdpSocket {
         socket.set_nonblocking(true)?;
         Ok(BasicUdpSocket {
             socket,
-            buffer: Vec::with_capacity(4 * 1024),
+            buffer: vec![0; 4096],
         })
     }
 }
