@@ -71,12 +71,13 @@ pub struct Session {
 
     step_size: Duration,
     local_id: PlayerId,
-    remote_players: HashMap<SocketAddr, PlayerId>,
+    player_addresses: HashMap<SocketAddr, PlayerId>,
     socket: Box<dyn NonBlockingSocket>,
 
     started_at: Instant,
     host_at: SimulationInstant,
     unconfirmed: Frame,
+    remote_unconfirmed: HashMap<PlayerId, Frame>,
 
     last_send: Option<Instant>,
     send_every: Duration,
@@ -85,7 +86,7 @@ pub struct Session {
 impl Session {
     pub fn players(&self) -> impl Iterator<Item = (PlayerId, Player)> + '_ {
         let remote = self
-            .remote_players
+            .player_addresses
             .iter()
             .map(|(s, id)| (*id, Player::Remote(*s)));
         [(self.local_id, Player::Local)].into_iter().chain(remote)
@@ -188,7 +189,7 @@ impl Session {
 
             match self.inputs(last_confirmed) {
                 None => return ControlFlow::Continue(()),
-                Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {
+                Some(inputs) if !inputs.is_complete(self.player_addresses.len()) => {
                     return ControlFlow::Continue(())
                 }
                 Some(inputs) => {
@@ -243,7 +244,7 @@ impl Session {
                 amount,
                 confirmed: if first_confirm {
                     Confirmation::First
-                } else if inputs.is_complete(self.remote_players.len()) {
+                } else if inputs.is_complete(self.player_addresses.len()) {
                     Confirmation::Subsequent
                 } else {
                     Confirmation::Unconfirmed
@@ -314,20 +315,30 @@ impl Session {
                 .unwrap_or(Instant::now()),
         );
 
-        let inputs = self.inputs.player_since_frame(self.local_id, Frame(0));
-        self.send(Message::Inputs(inputs));
+        for (player, unc) in self.remote_unconfirmed.clone() {
+            let inputs = self.inputs.player_since_frame(self.local_id, unc);
+            self.send_to(&Message::Inputs(inputs), player);
+        }
+
+        self.send(Message::Unconfirmed(self.unconfirmed - 1));
     }
 
     fn send(&mut self, message: Message) {
         let message = bincode::serialize(&message).expect("failed to serialize message");
-        for player in self.remote_players.keys() {
+        for player in self.player_addresses.keys() {
             self.socket.send(&message, *player);
         }
     }
 
+    fn send_to(&mut self, message: &Message, player: PlayerId) {
+        let message = bincode::serialize(&message).expect("failed to serialize message");
+        let addr = *self.player_addresses.iter().find(|(_, &id)| id == player).unwrap().0;
+        self.socket.send(&message, addr);
+    }
+
     fn process_incoming_messages(&mut self) {
         while let Some((addr, buffer)) = self.socket.recv() {
-            let player = match self.remote_players.get(&addr) {
+            let player = match self.player_addresses.get(&addr) {
                 Some(p) => p,
                 None => {
                     log::warn!("got message from non-player: {}", addr);
@@ -344,6 +355,10 @@ impl Session {
             match message {
                 Message::Inputs(map) => {
                     self.inputs.merge_remote(*player, map);
+                }
+                Message::Unconfirmed(frame) => {
+                    let unc = self.remote_unconfirmed.entry(*player).or_insert(frame);
+                    *unc = std::cmp::max(*unc, frame);
                 }
             }
         }
@@ -391,4 +406,5 @@ impl FrameState {
 #[derive(Serialize, Deserialize, Debug)]
 enum Message {
     Inputs(BTreeMap<Frame, Vec<u8>>),
+    Unconfirmed(Frame),
 }
