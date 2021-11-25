@@ -20,7 +20,7 @@ impl InputStorage {
         let mut result = PlayerInputs::default();
         for (player, inputs) in &self.inputs {
             if let Some(input) = inputs.at(frame) {
-                result.map.insert(*player, input.clone());
+                result.map.insert(*player, input.map(Clone::clone));
             }
         }
         if result.map.len() == 0 {
@@ -65,13 +65,13 @@ pub(crate) struct SparseInputs {
 }
 
 impl SparseInputs {
-    fn at(&self, frame: Frame) -> Option<&SerializedInput> {
+    fn at(&self, frame: Frame) -> Option<Confirmation<&SerializedInput>> {
         let (before_frame, before_value) = self.map.range(..=frame).next_back()?;
         let after = self.map.range(frame..).next();
         match after {
-            _ if *before_frame == frame => Some(before_value),
-            Some(_) => Some(before_value),
-            None => None,
+            _ if *before_frame == frame => Some(Confirmation::Confirmed(before_value)),
+            Some(_) => Some(Confirmation::Confirmed(before_value)),
+            None => Some(Confirmation::Unconfirmed(before_value)),
         }
     }
 
@@ -115,17 +115,34 @@ impl Default for SparseInputs {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct PlayerInputs<T = SerializedInput> {
+#[derive(Debug, Clone)]
+pub struct PlayerInputs<T = Confirmation<SerializedInput>> {
     map: HashMap<PlayerId, T>,
 }
 
 impl PlayerInputs {
-    pub fn is_complete(&self, remote_count: usize) -> bool {
+    pub fn is_fully_confirmed(&self, remote_count: usize) -> bool {
+        self.is_fully_populated(remote_count) &&
+            self.map.values().all(Confirmation::is_confirmed)
+    }
+
+    pub fn is_fully_populated(&self, remote_count: usize) -> bool {
         let should_have = remote_count + 1;
         let len = self.map.len();
         assert!(len <= should_have);
         len == should_have
+    }
+}
+
+impl<T> PlayerInputs<Confirmation<T>> {
+    pub fn deep_map<U>(self, mut f: impl FnMut(T) -> U) -> PlayerInputs<Confirmation<U>> {
+        PlayerInputs {
+            map: self
+                .map
+                .into_iter()
+                .map(move |(k, v)| (k, v.map(|v| f(v))))
+                .collect(),
+        }
     }
 }
 
@@ -142,5 +159,42 @@ impl<T> PlayerInputs<T> {
 
     pub fn get(&self, player: &PlayerId) -> Option<&T> {
         self.map.get(player)
+    }
+}
+
+impl<T> Default for PlayerInputs<T> {
+    fn default() -> Self {
+        PlayerInputs {
+            map: Default::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirmation<T> {
+    Confirmed(T),
+    Unconfirmed(T),
+}
+
+impl<T> Confirmation<T> {
+    pub fn into_inner(self) -> T {
+        match self {
+            Confirmation::Confirmed(t) => t,
+            Confirmation::Unconfirmed(t) => t,
+        }
+    }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Confirmation<U> {
+        match self {
+            Confirmation::Confirmed(t) => Confirmation::Confirmed(f(t)),
+            Confirmation::Unconfirmed(t) => Confirmation::Unconfirmed(f(t)),
+        }
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        match self {
+            Confirmation::Confirmed(_) => true,
+            Confirmation::Unconfirmed(_) => false,
+        }
     }
 }

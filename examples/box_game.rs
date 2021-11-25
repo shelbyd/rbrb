@@ -80,7 +80,7 @@ async fn main() {
                     amount: dt, inputs, ..
                 } => {
                     let inputs: PlayerInputs<Vec2> =
-                        inputs.map(|vec| bincode::deserialize_from(&vec[..]).unwrap());
+                        inputs.map(|vec| bincode::deserialize_from(&vec.into_inner()[..]).unwrap());
                     let speed = 100.;
                     for (player_id, input) in inputs.iter() {
                         let mut pos = game_state.box_positions.get_mut(player_id).unwrap();

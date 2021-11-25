@@ -189,7 +189,7 @@ impl Session {
 
             match self.inputs(last_confirmed) {
                 None => return ControlFlow::Continue(()),
-                Some(inputs) if !inputs.is_complete(self.player_addresses.len()) => {
+                Some(inputs) if !inputs.is_fully_confirmed(self.player_addresses.len()) => {
                     return ControlFlow::Continue(())
                 }
                 Some(inputs) => {
@@ -244,7 +244,7 @@ impl Session {
                 amount,
                 confirmed: if first_confirm {
                     Confirmation::First
-                } else if inputs.is_complete(self.player_addresses.len()) {
+                } else if inputs.is_fully_confirmed(self.player_addresses.len()) {
                     Confirmation::Subsequent
                 } else {
                     Confirmation::Unconfirmed
@@ -332,7 +332,12 @@ impl Session {
 
     fn send_to(&mut self, message: &Message, player: PlayerId) {
         let message = bincode::serialize(&message).expect("failed to serialize message");
-        let addr = *self.player_addresses.iter().find(|(_, &id)| id == player).unwrap().0;
+        let addr = *self
+            .player_addresses
+            .iter()
+            .find(|(_, &id)| id == player)
+            .unwrap()
+            .0;
         self.socket.send(&message, addr);
     }
 
