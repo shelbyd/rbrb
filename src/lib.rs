@@ -47,7 +47,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod builder;
+pub use builder::SessionBuilder;
 mod exponential_keeping;
+mod request_handler;
+use request_handler::ControlFlowExt;
+pub use request_handler::{Confirmation, Request, RequestHandler};
 mod socket;
 pub use socket::{BadSocket, NonBlockingSocket};
 
@@ -61,7 +66,7 @@ pub struct Session {
     saved_inputs: BTreeMap<Frame, PlayerInputs>,
 
     step_size: Duration,
-    local_index: PlayerId,
+    local_id: PlayerId,
     remote_players: HashMap<SocketAddr, PlayerId>,
     socket: Box<dyn NonBlockingSocket>,
 
@@ -76,7 +81,7 @@ impl Session {
             .remote_players
             .iter()
             .map(|(s, id)| (*id, Player::Remote(*s)));
-        [(self.local_index, Player::Local)]
+        [(self.local_id, Player::Local)]
             .into_iter()
             .chain(remote)
     }
@@ -171,7 +176,7 @@ impl Session {
                     .map(|(f, _)| *f + 1)
                     .unwrap_or(Frame(0));
                 self.send(Message::Input(insert_into_frame, &input[..]));
-                let inputs = PlayerInputs::just_local(self.local_index, input.clone());
+                let inputs = PlayerInputs::just_local(self.local_id, input.clone());
                 self.saved_inputs.insert(insert_into_frame, inputs);
                 if insert_into_frame == realtime {
                     break;
@@ -371,107 +376,15 @@ pub enum Player {
     Remote(SocketAddr),
 }
 
-pub trait RequestHandler {
-    type Break;
-
-    fn handle_request(&mut self, request: Request) -> ControlFlow<Self::Break>;
-}
-
-impl<F, M> RequestHandler for F
-where
-    F: FnMut(Request) -> M,
-    M: MaybeMessage,
-{
-    type Break = M::Message;
-
-    fn handle_request(&mut self, request: Request) -> ControlFlow<Self::Break> {
-        if let Some(m) = self(request).as_message() {
-            ControlFlow::Break(m)
-        } else {
-            ControlFlow::Continue(())
-        }
-    }
-}
-
-pub trait MaybeMessage {
-    type Message;
-
-    fn as_message(self) -> Option<Self::Message>;
-}
-
-impl<M> MaybeMessage for ControlFlow<M> {
-    type Message = M;
-
-    fn as_message(self) -> Option<Self::Message> {
-        match self {
-            ControlFlow::Break(m) => Some(m),
-            ControlFlow::Continue(()) => None,
-        }
-    }
-}
-
-impl<M> MaybeMessage for Option<M> {
-    type Message = M;
-
-    fn as_message(self) -> Option<Self::Message> {
-        self
-    }
-}
-
-impl MaybeMessage for () {
-    // TODO(shelbyd): Should be never (!).
-    type Message = ();
-
-    fn as_message(self) -> Option<Self::Message> {
-        None
-    }
-}
-
-trait ControlFlowExt {
-    type Break;
-    fn always<R>(self, f: impl FnOnce() -> R) -> ControlFlow<Self::Break, R>;
-}
-
-impl<B> ControlFlowExt for ControlFlow<B> {
-    type Break = B;
-
-    fn always<R>(self, f: impl FnOnce() -> R) -> ControlFlow<B, R> {
-        let ret = f();
-        self?;
-        ControlFlow::Continue(ret)
-    }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Request<'s> {
-    SaveTo(&'s mut SerializedState),
-    LoadFrom(&'s [u8]),
-    #[non_exhaustive]
-    Advance {
-        amount: Duration,
-        inputs: PlayerInputs,
-        confirmed: Confirmation,
-    },
-    CaptureLocalInput(&'s mut SerializedInput),
-}
-
-#[derive(Debug)]
-pub enum Confirmation {
-    Unconfirmed,
-    First,
-    Subsequent,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct PlayerInputs<T = SerializedInput> {
     map: HashMap<PlayerId, T>,
 }
 
 impl PlayerInputs {
-    fn just_local(local_index: PlayerId, input: SerializedInput) -> Self {
+    fn just_local(local_id: PlayerId, input: SerializedInput) -> Self {
         let mut map = HashMap::default();
-        map.insert(local_index, input);
+        map.insert(local_id, input);
         PlayerInputs { map }
     }
 
@@ -540,66 +453,4 @@ impl FrameState {
 #[derive(Serialize, Deserialize, Debug)]
 enum Message<'i> {
     Input(Frame, &'i [u8]),
-}
-
-#[derive(Default)]
-pub struct SessionBuilder {
-    remote_players: Vec<SocketAddr>,
-    local_player: Option<(PlayerId, u16)>,
-    step_size: Option<Duration>,
-    socket: Option<Box<dyn NonBlockingSocket>>,
-}
-
-impl SessionBuilder {
-    pub fn remote_players(mut self, players: &[SocketAddr]) -> Self {
-        self.remote_players = players.to_vec();
-        self
-    }
-
-    pub fn local_player(mut self, index: PlayerId, port: u16) -> Self {
-        self.local_player = Some((index, port));
-        self
-    }
-
-    pub fn step_size(mut self, size: Duration) -> Self {
-        self.step_size = Some(size);
-        self
-    }
-
-    pub fn with_socket(mut self, socket: impl NonBlockingSocket + 'static) -> Self {
-        self.socket = Some(Box::new(socket));
-        self
-    }
-
-    pub fn start(self) -> Result<Session, String> {
-        let (local_index, port) = self.local_player.ok_or("must provide local_player")?;
-
-        let remote_players = self
-            .remote_players
-            .into_iter()
-            .enumerate()
-            .map(|(i, addr)| {
-                let i = i as u16;
-                if i >= local_index {
-                    (addr, i + 1)
-                } else {
-                    (addr, i)
-                }
-            })
-            .collect();
-
-        Ok(Session {
-            confirmed_states: BTreeMap::default(),
-            saved_inputs: BTreeMap::default(),
-            host_at: Duration::ZERO,
-            started_at: Instant::now(),
-            step_size: self.step_size.ok_or("must provide step_size")?,
-            local_index,
-            socket: self
-                .socket
-                .unwrap_or_else(|| Box::new(socket::BasicUdpSocket::bind(port).unwrap())),
-            remote_players,
-            unconfirmed: Frame(1),
-        })
-    }
 }

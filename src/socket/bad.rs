@@ -1,6 +1,6 @@
 use super::{BasicUdpSocket, NonBlockingSocket};
 
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::net::SocketAddr;
 
 pub struct BadSocket {

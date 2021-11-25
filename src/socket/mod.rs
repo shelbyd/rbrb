@@ -37,10 +37,11 @@ impl NonBlockingSocket for BasicUdpSocket {
             Ok((amount, addr)) => {
                 if amount == self.buffer.len() {
                     log::info!("doubling receive buffer to {} bytes", self.buffer.len() * 2);
-                    self.buffer.extend(std::iter::repeat(0).take(self.buffer.len()));
+                    self.buffer
+                        .extend(std::iter::repeat(0).take(self.buffer.len()));
                 }
                 Some((addr, &self.buffer[0..amount]))
-            },
+            }
             Err(e) if e.kind() == ErrorKind::WouldBlock => None,
             unhandled => {
                 unimplemented!("unhandled: {:?}", unhandled);
