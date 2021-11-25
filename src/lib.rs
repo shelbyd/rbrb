@@ -55,6 +55,8 @@ use request_handler::ControlFlowExt;
 pub use request_handler::{Confirmation, Request, RequestHandler};
 mod socket;
 pub use socket::{BadSocket, NonBlockingSocket};
+mod utils;
+use utils::div_duration;
 
 pub type SerializedState = Vec<u8>;
 pub type SerializedInput = Vec<u8>;
@@ -81,9 +83,7 @@ impl Session {
             .remote_players
             .iter()
             .map(|(s, id)| (*id, Player::Remote(*s)));
-        [(self.local_id, Player::Local)]
-            .into_iter()
-            .chain(remote)
+        [(self.local_id, Player::Local)].into_iter().chain(remote)
     }
 
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {
@@ -105,23 +105,33 @@ impl Session {
             self.save_confirmed_frames(&mut handler)?;
             self.advance_confirmed_horizon(&mut handler)?;
 
-            let frame = self.frame_state();
-            match (frame.into_frame().cmp(&self.realtime_frame()), frame) {
-                (Ordering::Greater, f) => {
-                    unreachable!("advanced too far: {:?} > {:?}", f, self.realtime_frame());
-                }
-                (Ordering::Equal, _) => return ControlFlow::Continue(()),
-                (Ordering::Less, FrameState::At(_)) => {
-                    self.try_advance(&mut handler, self.step_size)?;
-                    // TODO(shelbyd): Do partial advance?
-                }
-                (Ordering::Less, FrameState::After(f)) => {
-                    self.navigate_to(f, &mut handler)?;
-                    self.try_advance(&mut handler, self.step_size)?;
-                    // TODO(shelbyd): Do partial advance?
-                }
+            if !self.step_towards_realtime(&mut handler)? {
+                return ControlFlow::Continue(());
             }
         }
+    }
+
+    fn step_towards_realtime<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<H::Break, bool> {
+        let frame = self.frame_state();
+        match (frame.into_frame().cmp(&self.realtime_frame()), frame) {
+            (Ordering::Greater, f) => {
+                unreachable!("advanced too far: {:?} > {:?}", f, self.realtime_frame());
+            }
+            (Ordering::Equal, _) => return ControlFlow::Continue(false),
+            (Ordering::Less, FrameState::At(_)) => {
+                self.try_advance(handler, self.step_size)?;
+                // TODO(shelbyd): Do partial advance?
+            }
+            (Ordering::Less, FrameState::After(f, _)) => {
+                self.navigate_to(f, handler)?;
+                self.try_advance(handler, self.step_size)?;
+                // TODO(shelbyd): Do partial advance?
+            }
+        }
+        ControlFlow::Continue(false)
     }
 
     fn save_confirmed_frames<H: RequestHandler>(
@@ -129,30 +139,22 @@ impl Session {
         handler: &mut H,
     ) -> ControlFlow<H::Break> {
         if self.confirmed_states.len() == 0 {
-            let mut state = Vec::new();
-            handler
-                .handle_request(Request::SaveTo(&mut state))
-                .always(|| {
-                    self.confirmed_states.insert(Frame(0), state);
-                })?;
+            let state = self.confirmed_states.entry(Frame(0)).or_default();
+            handler.handle_request(Request::SaveTo(state))?;
         }
 
         let current_frame = self.frame_state().into_frame();
         let kept = exponential_keeping::kept_set((self.unconfirmed - 1).0);
         if kept.contains(&current_frame.0) {
             if let None = self.confirmed_states.get(&current_frame) {
-                let mut state = Vec::new();
-                handler
-                    .handle_request(Request::SaveTo(&mut state))
-                    .always(|| {
-                        self.confirmed_states.insert(current_frame, state);
+                for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
+                    if !kept.contains(&key.0) {
+                        self.confirmed_states.remove(&key);
+                    }
+                }
 
-                        for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
-                            if !kept.contains(&key.0) {
-                                self.confirmed_states.remove(&key);
-                            }
-                        }
-                    })?;
+                let state = self.confirmed_states.entry(current_frame).or_default();
+                handler.handle_request(Request::SaveTo(state))?;
             }
         }
 
@@ -263,7 +265,7 @@ impl Session {
     fn do_advance<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
         let frame = match self.frame_state() {
             FrameState::At(f) => f,
-            FrameState::After(_) => unimplemented!("FrameState::After"),
+            FrameState::After(_, _) => unimplemented!("FrameState::After"),
         };
         let inputs = self
             .inputs(frame)
@@ -279,7 +281,7 @@ impl Session {
     ) -> ControlFlow<H::Break> {
         let frame = match self.frame_state() {
             FrameState::At(f) => f,
-            FrameState::After(_) => unimplemented!("FrameState::After"),
+            FrameState::After(_, _) => unimplemented!("FrameState::After"),
         };
 
         if let Some(inputs) = self.inputs(frame) {
@@ -298,37 +300,12 @@ impl Session {
     }
 
     fn calculate_frame_state(&self, at: Duration) -> FrameState {
-        // TODO(shelbyd): Extract into algorithms crate.
-
-        let step = self.step_size;
-
-        let mut min = 0;
-        let mut max = 1;
-
-        loop {
-            if step * min == at {
-                return FrameState::At(Frame(min));
-            }
-            if step * max > at {
-                break;
-            }
-            min = max;
-            max *= 2;
+        let (n, rem) = div_duration(at, self.step_size);
+        if rem == Duration::ZERO {
+            FrameState::At(Frame(n))
+        } else {
+            FrameState::After(Frame(n), rem)
         }
-
-        while max - min > 1 {
-            let mid = min + (max - min) / 2;
-            match (step * mid).cmp(&at) {
-                Ordering::Equal => return FrameState::At(Frame(mid)),
-                Ordering::Greater => {
-                    max = mid;
-                }
-                Ordering::Less => {
-                    min = mid;
-                }
-            }
-        }
-        FrameState::After(Frame(min))
     }
 
     fn inputs(&self, at: Frame) -> Option<PlayerInputs> {
@@ -438,14 +415,14 @@ impl core::ops::Sub<u32> for Frame {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FrameState {
     At(Frame),
-    After(Frame),
+    After(Frame, Duration),
 }
 
 impl FrameState {
     fn into_frame(self) -> Frame {
         match self {
             FrameState::At(f) => f,
-            FrameState::After(f) => f,
+            FrameState::After(f, _) => f,
         }
     }
 }
