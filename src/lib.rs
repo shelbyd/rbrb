@@ -75,6 +75,9 @@ pub struct Session {
     started_at: Instant,
     host_at: SimulationInstant,
     unconfirmed: Frame,
+
+    last_send: Option<Instant>,
+    send_every: Duration,
 }
 
 impl Session {
@@ -87,8 +90,6 @@ impl Session {
     }
 
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {
-        self.process_incoming_messages();
-
         match self.next_request_flow_inverted(handler) {
             ControlFlow::Break(m) => ControlFlow::Continue(m),
             ControlFlow::Continue(()) => ControlFlow::Break(()),
@@ -103,6 +104,8 @@ impl Session {
             // TODO(shelbyd): Wait for all players to connect to start the simulation.
             self.capture_inputs(&mut handler)?;
             self.save_confirmed_frames(&mut handler)?;
+            self.send_messages();
+            self.process_incoming_messages();
             self.advance_confirmed_horizon(&mut handler)?;
 
             if !self.step_towards_realtime(&mut handler)? {
@@ -144,7 +147,7 @@ impl Session {
         }
 
         let current_frame = self.frame_state().into_frame();
-        let kept = exponential_keeping::kept_set((self.unconfirmed - 1).0);
+        let kept = exponential_keeping::kept_set(self.unconfirmed.0);
         if kept.contains(&current_frame.0) {
             if let None = self.confirmed_states.get(&current_frame) {
                 for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
@@ -177,9 +180,10 @@ impl Session {
                     .next_back()
                     .map(|(f, _)| *f + 1)
                     .unwrap_or(Frame(0));
-                self.send(Message::Input(insert_into_frame, &input[..]));
-                let inputs = PlayerInputs::just_local(self.local_id, input.clone());
-                self.saved_inputs.insert(insert_into_frame, inputs);
+                self.saved_inputs
+                    .entry(insert_into_frame)
+                    .or_default()
+                    .insert_new(self.local_id, input.clone());
                 if insert_into_frame == realtime {
                     break;
                 } else {
@@ -192,26 +196,26 @@ impl Session {
         &mut self,
         handler: &mut H,
     ) -> ControlFlow<H::Break> {
-        let last_confirmed = self.unconfirmed - 1;
-        let current_frame = self.frame_state().into_frame();
-        let should_advance = current_frame < self.realtime_frame();
-        if !should_advance {
-            return ControlFlow::Continue(());
-        }
+        loop {
+            let last_confirmed = self.unconfirmed - 1;
+            let current_frame = self.frame_state().into_frame();
+            let should_advance = current_frame < self.realtime_frame();
+            if !should_advance {
+                return ControlFlow::Continue(());
+            }
 
-        match self.saved_inputs.get(&last_confirmed) {
-            None => {}
-            Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {}
-            Some(inputs) => {
-                let inputs = inputs.clone();
-                self.navigate_to(last_confirmed, handler)?;
+            match self.saved_inputs.get(&last_confirmed) {
+                None => return ControlFlow::Continue(()),
+                Some(inputs) if !inputs.is_complete(self.remote_players.len()) => return ControlFlow::Continue(()),
+                Some(inputs) => {
+                    let inputs = inputs.clone();
+                    self.navigate_to(last_confirmed, handler)?;
 
-                self.advance_with(inputs, handler, self.step_size, true)
-                    .always(|| self.unconfirmed = self.unconfirmed + 1)?;
+                    self.advance_with(inputs, handler, self.step_size, true)
+                        .always(|| self.unconfirmed = self.unconfirmed + 1)?;
+                }
             }
         }
-
-        ControlFlow::Continue(())
     }
 
     fn navigate_to<H: RequestHandler>(
@@ -224,8 +228,11 @@ impl Session {
             match current_frame.cmp(&frame) {
                 Ordering::Equal => return ControlFlow::Continue(()),
                 Ordering::Greater => {
-                    let (roll_to, state) =
-                        self.confirmed_states.range(..=frame).next_back().unwrap();
+                    let (roll_to, state) = self
+                        .confirmed_states
+                        .range(..=frame)
+                        .next_back()
+                        .expect("should have at least one confirmed state");
                     log::debug!("rolling back {} frames", current_frame.0 - roll_to.0);
                     handler
                         .handle_request(Request::LoadFrom(&state))
@@ -312,6 +319,28 @@ impl Session {
         self.saved_inputs.get(&at).cloned()
     }
 
+    fn send_messages(&mut self) {
+        match self.last_send {
+            Some(at) if at.elapsed() < self.send_every => return,
+            _ => {}
+        }
+        self.last_send = Some(
+            self.last_send
+                .map(|at| at + self.send_every)
+                .unwrap_or(Instant::now()),
+        );
+
+        let inputs = Message::Inputs(
+            self.saved_inputs
+                .iter()
+                .filter_map(|(frame, input)| {
+                    Some((*frame, input.map.get(&self.local_id)?.to_vec()))
+                })
+                .collect(),
+        );
+        self.send(inputs);
+    }
+
     fn send(&mut self, message: Message) {
         let message = bincode::serialize(&message).expect("failed to serialize message");
         for player in self.remote_players.keys() {
@@ -335,13 +364,14 @@ impl Session {
                     continue;
                 }
             };
-            log::debug!("(player, message): {:?}", (player, &message));
             match message {
-                Message::Input(frame, input) => {
-                    self.saved_inputs
-                        .entry(frame)
-                        .or_default()
-                        .insert(*player, input.to_vec());
+                Message::Inputs(map) => {
+                    for (frame, input) in map {
+                        self.saved_inputs
+                            .entry(frame)
+                            .or_default()
+                            .insert(*player, input.to_vec());
+                    }
                 }
             }
         }
@@ -359,12 +389,6 @@ pub struct PlayerInputs<T = SerializedInput> {
 }
 
 impl PlayerInputs {
-    fn just_local(local_id: PlayerId, input: SerializedInput) -> Self {
-        let mut map = HashMap::default();
-        map.insert(local_id, input);
-        PlayerInputs { map }
-    }
-
     fn is_complete(&self, remote_count: usize) -> bool {
         let should_have = remote_count + 1;
         let len = self.map.len();
@@ -384,13 +408,17 @@ impl<T> PlayerInputs<T> {
         self.map.iter()
     }
 
-    fn insert(&mut self, at: PlayerId, val: T) {
+    fn insert_new(&mut self, at: PlayerId, val: T) {
         let already = self.map.insert(at, val);
         assert!(
             already.is_none(),
             "inserted duplicate input for player {}",
             at
         );
+    }
+
+    fn insert(&mut self, at: PlayerId, val: T) {
+        self.map.insert(at, val);
     }
 }
 
@@ -428,6 +456,6 @@ impl FrameState {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-enum Message<'i> {
-    Input(Frame, &'i [u8]),
+enum Message {
+    Inputs(BTreeMap<Frame, Vec<u8>>),
 }

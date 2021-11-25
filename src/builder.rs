@@ -64,6 +64,8 @@ impl SessionBuilder {
                 .unwrap_or_else(|| Box::new(BasicUdpSocket::bind(port).unwrap())),
             remote_players,
             unconfirmed: Frame(1),
+            last_send: None,
+            send_every: Duration::from_millis(50),
         })
     }
 }
