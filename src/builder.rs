@@ -54,7 +54,7 @@ impl SessionBuilder {
 
         Ok(Session {
             confirmed_states: BTreeMap::default(),
-            saved_inputs: BTreeMap::default(),
+            inputs: crate::InputStorage::default(),
             host_at: Duration::ZERO,
             started_at: Instant::now(),
             step_size: self.step_size.ok_or("must provide step_size")?,

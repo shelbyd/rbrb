@@ -10,6 +10,7 @@ repository = "https://github.com/shelbyd/rbrb"
 
 [dependencies]
 bincode = "1.3.3"
+derive_more = "0.99.16"
 log = "0.4.14"
 rand = { version = "0.8.4", features = ["small_rng"] }
 serde = {version = "1.0.130", features = ["derive"]}

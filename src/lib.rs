@@ -50,6 +50,9 @@ use std::{
 mod builder;
 pub use builder::SessionBuilder;
 mod exponential_keeping;
+mod inputs;
+use inputs::InputStorage;
+pub use inputs::{PlayerInputs, SerializedInput};
 mod request_handler;
 use request_handler::ControlFlowExt;
 pub use request_handler::{Confirmation, Request, RequestHandler};
@@ -59,13 +62,12 @@ mod utils;
 use utils::div_duration;
 
 pub type SerializedState = Vec<u8>;
-pub type SerializedInput = Vec<u8>;
 pub type SimulationInstant = Duration;
 pub type PlayerId = u16;
 
 pub struct Session {
     confirmed_states: BTreeMap<Frame, SerializedState>,
-    saved_inputs: BTreeMap<Frame, PlayerInputs>,
+    inputs: InputStorage,
 
     step_size: Duration,
     local_id: PlayerId,
@@ -166,30 +168,10 @@ impl Session {
 
     fn capture_inputs<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
         let realtime = self.realtime_frame();
-        if self.saved_inputs.contains_key(&realtime) {
-            return ControlFlow::Continue(());
+        if let Some(vec) = self.inputs.capture_into(realtime, self.local_id) {
+            handler.handle_request(Request::CaptureLocalInput(vec))?;
         }
-
-        let mut input = Vec::new();
-        handler
-            .handle_request(Request::CaptureLocalInput(&mut input))
-            .always(|| loop {
-                let insert_into_frame = self
-                    .saved_inputs
-                    .range(..)
-                    .next_back()
-                    .map(|(f, _)| *f + 1)
-                    .unwrap_or(Frame(0));
-                self.saved_inputs
-                    .entry(insert_into_frame)
-                    .or_default()
-                    .insert_new(self.local_id, input.clone());
-                if insert_into_frame == realtime {
-                    break;
-                } else {
-                    log::warn!("missed capturing input for frame {:?}", insert_into_frame);
-                }
-            })
+        ControlFlow::Continue(())
     }
 
     fn advance_confirmed_horizon<H: RequestHandler>(
@@ -204,9 +186,11 @@ impl Session {
                 return ControlFlow::Continue(());
             }
 
-            match self.saved_inputs.get(&last_confirmed) {
+            match self.inputs(last_confirmed) {
                 None => return ControlFlow::Continue(()),
-                Some(inputs) if !inputs.is_complete(self.remote_players.len()) => return ControlFlow::Continue(()),
+                Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {
+                    return ControlFlow::Continue(())
+                }
                 Some(inputs) => {
                     let inputs = inputs.clone();
                     self.navigate_to(last_confirmed, handler)?;
@@ -316,7 +300,7 @@ impl Session {
     }
 
     fn inputs(&self, at: Frame) -> Option<PlayerInputs> {
-        self.saved_inputs.get(&at).cloned()
+        self.inputs.at_frame(at)
     }
 
     fn send_messages(&mut self) {
@@ -330,15 +314,8 @@ impl Session {
                 .unwrap_or(Instant::now()),
         );
 
-        let inputs = Message::Inputs(
-            self.saved_inputs
-                .iter()
-                .filter_map(|(frame, input)| {
-                    Some((*frame, input.map.get(&self.local_id)?.to_vec()))
-                })
-                .collect(),
-        );
-        self.send(inputs);
+        let inputs = self.inputs.player_since_frame(self.local_id, Frame(0));
+        self.send(Message::Inputs(inputs));
     }
 
     fn send(&mut self, message: Message) {
@@ -366,12 +343,7 @@ impl Session {
             };
             match message {
                 Message::Inputs(map) => {
-                    for (frame, input) in map {
-                        self.saved_inputs
-                            .entry(frame)
-                            .or_default()
-                            .insert(*player, input.to_vec());
-                    }
+                    self.inputs.merge_remote(*player, map);
                 }
             }
         }
@@ -381,45 +353,6 @@ impl Session {
 pub enum Player {
     Local,
     Remote(SocketAddr),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PlayerInputs<T = SerializedInput> {
-    map: HashMap<PlayerId, T>,
-}
-
-impl PlayerInputs {
-    fn is_complete(&self, remote_count: usize) -> bool {
-        let should_have = remote_count + 1;
-        let len = self.map.len();
-        assert!(len <= should_have);
-        len == should_have
-    }
-}
-
-impl<T> PlayerInputs<T> {
-    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> PlayerInputs<U> {
-        PlayerInputs {
-            map: self.map.into_iter().map(|(k, v)| (k, f(v))).collect(),
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&PlayerId, &T)> {
-        self.map.iter()
-    }
-
-    fn insert_new(&mut self, at: PlayerId, val: T) {
-        let already = self.map.insert(at, val);
-        assert!(
-            already.is_none(),
-            "inserted duplicate input for player {}",
-            at
-        );
-    }
-
-    fn insert(&mut self, at: PlayerId, val: T) {
-        self.map.insert(at, val);
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
