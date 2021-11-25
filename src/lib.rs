@@ -38,6 +38,11 @@
 //! - [ ] Input delta encoding
 //! - [ ] Hub and spoke network
 
+// Internal TODO list
+// - wait for everyone to connect
+// - share state checksums (probably with seahash)
+// - adjust local simulation when behind/ahead
+
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
