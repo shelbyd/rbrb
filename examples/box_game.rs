@@ -1,4 +1,4 @@
-use rbrb::{PlayerId, PlayerInputs, Request, SessionBuilder};
+use rbrb::{BadSocket, PlayerId, PlayerInputs, Request, SessionBuilder};
 
 use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ async fn main() {
         .remote_players(&options.remote_players)
         .local_player(options.local_index, options.local_port)
         .step_size(Duration::from_millis(17))
+        .with_socket(BadSocket::bind(options.local_port).unwrap())
         .start()
         .unwrap();
 

@@ -3,6 +3,9 @@ use std::{
     net::{SocketAddr, UdpSocket},
 };
 
+mod bad;
+pub use bad::*;
+
 pub trait NonBlockingSocket {
     fn send(&mut self, message: &[u8], addr: SocketAddr);
     fn recv(&mut self) -> Option<(SocketAddr, &[u8])>;
@@ -19,7 +22,7 @@ impl BasicUdpSocket {
         socket.set_nonblocking(true)?;
         Ok(BasicUdpSocket {
             socket,
-            buffer: vec![0; 4096],
+            buffer: vec![0; 64],
         })
     }
 }
@@ -31,7 +34,13 @@ impl NonBlockingSocket for BasicUdpSocket {
 
     fn recv(&mut self) -> Option<(SocketAddr, &[u8])> {
         match self.socket.recv_from(&mut self.buffer[..]) {
-            Ok((amount, addr)) => Some((addr, &self.buffer[0..amount])),
+            Ok((amount, addr)) => {
+                if amount == self.buffer.len() {
+                    log::info!("doubling receive buffer to {} bytes", self.buffer.len() * 2);
+                    self.buffer.extend(std::iter::repeat(0).take(self.buffer.len()));
+                }
+                Some((addr, &self.buffer[0..amount]))
+            },
             Err(e) if e.kind() == ErrorKind::WouldBlock => None,
             unhandled => {
                 unimplemented!("unhandled: {:?}", unhandled);

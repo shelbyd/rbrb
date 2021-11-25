@@ -49,7 +49,7 @@ use std::{
 
 mod exponential_keeping;
 mod socket;
-pub use socket::NonBlockingSocket;
+pub use socket::{BadSocket, NonBlockingSocket};
 
 pub type SerializedState = Vec<u8>;
 pub type SerializedInput = Vec<u8>;
@@ -194,8 +194,7 @@ impl Session {
 
         match self.saved_inputs.get(&last_confirmed) {
             None => {}
-            Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {
-            }
+            Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {}
             Some(inputs) => {
                 let inputs = inputs.clone();
                 self.navigate_to(last_confirmed, handler)?;
@@ -548,32 +547,38 @@ pub struct SessionBuilder {
     remote_players: Vec<SocketAddr>,
     local_player: Option<(PlayerId, u16)>,
     step_size: Option<Duration>,
+    socket: Option<Box<dyn NonBlockingSocket>>,
 }
 
 impl SessionBuilder {
-    pub fn remote_players(&mut self, players: &[SocketAddr]) -> &mut Self {
+    pub fn remote_players(mut self, players: &[SocketAddr]) -> Self {
         self.remote_players = players.to_vec();
         self
     }
 
-    pub fn local_player(&mut self, index: PlayerId, port: u16) -> &mut Self {
+    pub fn local_player(mut self, index: PlayerId, port: u16) -> Self {
         self.local_player = Some((index, port));
         self
     }
 
-    pub fn step_size(&mut self, size: Duration) -> &mut Self {
+    pub fn step_size(mut self, size: Duration) -> Self {
         self.step_size = Some(size);
         self
     }
 
-    pub fn start(&mut self) -> Result<Session, String> {
+    pub fn with_socket(mut self, socket: impl NonBlockingSocket + 'static) -> Self {
+        self.socket = Some(Box::new(socket));
+        self
+    }
+
+    pub fn start(self) -> Result<Session, String> {
         let (local_index, port) = self.local_player.ok_or("must provide local_player")?;
 
         let remote_players = self
             .remote_players
-            .iter()
+            .into_iter()
             .enumerate()
-            .map(|(i, &addr)| {
+            .map(|(i, addr)| {
                 let i = i as u16;
                 if i >= local_index {
                     (addr, i + 1)
@@ -590,7 +595,9 @@ impl SessionBuilder {
             started_at: Instant::now(),
             step_size: self.step_size.ok_or("must provide step_size")?,
             local_index,
-            socket: Box::new(socket::BasicUdpSocket::bind(port).unwrap()),
+            socket: self
+                .socket
+                .unwrap_or_else(|| Box::new(socket::BasicUdpSocket::bind(port).unwrap())),
             remote_players,
             unconfirmed: Frame(1),
         })
