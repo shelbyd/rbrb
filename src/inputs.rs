@@ -13,34 +13,36 @@ pub(crate) struct InputStorage {
 impl InputStorage {
     pub fn capture_into(&mut self, frame: Frame, local_id: PlayerId) -> Option<&mut Vec<u8>> {
         let inputs = self.inputs.entry(local_id).or_default();
-        if inputs.contains_key(&frame) {
-            return None;
-        }
-
-        Some(inputs.entry(frame).or_default())
+        inputs.capture_into(frame)
     }
 
     pub fn at_frame(&self, frame: Frame) -> Option<PlayerInputs> {
-        let mut inputs = PlayerInputs::default();
-        for (player, remote_inputs) in &self.inputs {
-            if let Some(input) = remote_inputs.get(&frame) {
-                inputs.map.insert(*player, input.clone());
+        let mut result = PlayerInputs::default();
+        for (player, inputs) in &self.inputs {
+            if let Some(input) = inputs.at(frame) {
+                result.map.insert(*player, input.clone());
             }
         }
-        if inputs.map.len() == 0 {
+        if result.map.len() == 0 {
             None
         } else {
-            Some(inputs)
+            Some(result)
         }
     }
 
     pub fn player_since_frame(
         &mut self,
         player_id: PlayerId,
-        _frame: Frame,
+        frame: Frame,
     ) -> BTreeMap<Frame, SerializedInput> {
-        // TODO(shelbyd): Filter by frame.
-        self.inputs.entry(player_id).or_default().clone()
+        self.inputs
+            .entry(player_id)
+            .or_default()
+            .iter()
+            .rev()
+            .take_while(|(&k, _)| k >= frame)
+            .map(|(&k, v)| (k, v.clone()))
+            .collect()
     }
 
     pub fn merge_remote(&mut self, player: PlayerId, map: BTreeMap<Frame, SerializedInput>) {
@@ -54,9 +56,63 @@ impl InputStorage {
     }
 }
 
-#[derive(Default, Deref, DerefMut)]
+#[derive(Deref, DerefMut)]
 pub(crate) struct SparseInputs {
+    #[deref]
+    #[deref_mut]
     map: BTreeMap<Frame, SerializedInput>,
+    next_compact: Frame,
+}
+
+impl SparseInputs {
+    fn at(&self, frame: Frame) -> Option<&SerializedInput> {
+        let (before_frame, before_value) = self.map.range(..=frame).next_back()?;
+        let after = self.map.range(frame..).next();
+        match after {
+            _ if *before_frame == frame => Some(before_value),
+            Some(_) => Some(before_value),
+            None => None,
+        }
+    }
+
+    fn capture_into(&mut self, frame: Frame) -> Option<&mut SerializedInput> {
+        if self.map.contains_key(&frame) {
+            return None;
+        }
+
+        self.compact();
+        Some(self.map.entry(frame).or_default())
+    }
+
+    fn compact(&mut self) -> Option<()> {
+        loop {
+            let mut at_or_after = self.map.range(self.next_compact..);
+            let (next_frame, next_input) = at_or_after.next()?;
+            let next_frame = *next_frame;
+
+            // Should not compact the last frame. We could not provide confident values for frames
+            // that have been captured if they were the same as previous frames.
+            at_or_after.next()?;
+
+            if let Some((_, before)) = self.map.range(..self.next_compact).next_back() {
+                if before == next_input {
+                    self.map.remove(&next_frame);
+                }
+            } else {
+                debug_assert_eq!(self.next_compact, Frame(0));
+            }
+            self.next_compact = next_frame + 1;
+        }
+    }
+}
+
+impl Default for SparseInputs {
+    fn default() -> Self {
+        SparseInputs {
+            map: Default::default(),
+            next_compact: Frame(0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

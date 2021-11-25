@@ -217,7 +217,7 @@ impl Session {
                         .range(..=frame)
                         .next_back()
                         .expect("should have at least one confirmed state");
-                    log::debug!("rolling back {} frames", current_frame.0 - roll_to.0);
+                    log::info!("rolling back {} frames", current_frame.0 - roll_to.0);
                     handler
                         .handle_request(Request::LoadFrom(&state))
                         .always(|| {
