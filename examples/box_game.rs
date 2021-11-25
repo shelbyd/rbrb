@@ -18,14 +18,13 @@ struct Options {
 
 #[derive(Default, Serialize, Deserialize)]
 struct GameState {
-    value: isize,
-    player_cooldowns: BTreeMap<PlayerId, Duration>,
+    box_positions: BTreeMap<PlayerId, Vec2>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-enum Action {
-    Increment,
-    Decrement,
+#[derive(Default, Serialize, Deserialize)]
+struct Vec2 {
+    x: f32,
+    y: f32,
 }
 
 #[macroquad::main("Basic RbRb")]
@@ -41,6 +40,12 @@ async fn main() {
         .unwrap();
 
     let mut game_state = GameState::default();
+    for (id, _type) in session.players() {
+        game_state.box_positions.entry(id).or_insert_with(|| Vec2 {
+            x: id as f32 * 30. + 100.,
+            y: 60.,
+        });
+    }
     loop {
         while let ControlFlow::Continue(()) = session.next_request(|request: Request<'_>| {
             match request {
@@ -53,50 +58,44 @@ async fn main() {
                     }
                 }
                 Request::CaptureLocalInput(vec) => {
-                    let input = if is_key_down(KeyCode::Up) {
-                        Some(Action::Increment)
-                    } else if is_key_down(KeyCode::Down) {
-                        Some(Action::Decrement)
-                    } else {
-                        None
-                    };
+                    let mut input = Vec2::default();
+
+                    if is_key_down(KeyCode::Up) {
+                        input.y -= 1.;
+                    }
+                    if is_key_down(KeyCode::Down) {
+                        input.y += 1.;
+                    }
+                    if is_key_down(KeyCode::Left) {
+                        input.x -= 1.;
+                    }
+                    if is_key_down(KeyCode::Right) {
+                        input.x += 1.;
+                    }
+
                     bincode::serialize_into(vec, &input).unwrap();
                 }
                 Request::Advance {
                     amount: dt, inputs, ..
                 } => {
-                    game_state.player_cooldowns = game_state
-                        .player_cooldowns
-                        .iter()
-                        .filter_map(|(k, v)| if *v < dt { None } else { Some((*k, *v - dt)) })
-                        .collect();
-
-                    let inputs: PlayerInputs<Option<Action>> =
+                    let inputs: PlayerInputs<Vec2> =
                         inputs.map(|vec| bincode::deserialize_from(&vec[..]).unwrap());
-                    for (player_id, action) in inputs.iter() {
-                        let on_cooldown = game_state.player_cooldowns.contains_key(&player_id);
-                        if on_cooldown {
-                            continue;
-                        }
-
-                        if let Some(action) = action {
-                            match action {
-                                Action::Increment => game_state.value += 1,
-                                Action::Decrement => game_state.value -= 1,
-                            }
-                            game_state
-                                .player_cooldowns
-                                .insert(*player_id, Duration::from_millis(300));
-                        }
+                    let speed = 100.;
+                    for (player_id, input) in inputs.iter() {
+                        let mut pos = game_state.box_positions.get_mut(player_id).unwrap();
+                        pos.x += input.x * dt.as_secs_f32() * speed;
+                        pos.y += input.y * dt.as_secs_f32() * speed;
                     }
                 }
                 unhandled => {
-                    panic!("unhandled request: {:?}", unhandled);
+                    log::warn!("unhandled request: {:?}", unhandled);
                 }
             }
         }) {}
 
-        draw_text(&format!("{}", game_state.value), 20.0, 20.0, 20.0, WHITE);
+        for pos in game_state.box_positions.values() {
+            draw_rectangle(pos.x, pos.y, 10., 10., WHITE);
+        }
 
         next_frame().await;
     }

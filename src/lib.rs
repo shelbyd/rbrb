@@ -71,6 +71,16 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn players(&self) -> impl Iterator<Item = (PlayerId, Player)> + '_ {
+        let remote = self
+            .remote_players
+            .iter()
+            .map(|(s, id)| (*id, Player::Remote(*s)));
+        [(self.local_index, Player::Local)]
+            .into_iter()
+            .chain(remote)
+    }
+
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {
         self.process_incoming_messages();
 
@@ -122,15 +132,15 @@ impl Session {
                 })?;
         }
 
-        let frame = self.frame_state().into_frame();
+        let current_frame = self.frame_state().into_frame();
         let kept = exponential_keeping::kept_set((self.unconfirmed - 1).0);
-        if kept.contains(&frame.0) {
-            if let None = self.confirmed_states.get(&frame) {
+        if kept.contains(&current_frame.0) {
+            if let None = self.confirmed_states.get(&current_frame) {
                 let mut state = Vec::new();
                 handler
                     .handle_request(Request::SaveTo(&mut state))
                     .always(|| {
-                        self.confirmed_states.insert(frame, state);
+                        self.confirmed_states.insert(current_frame, state);
 
                         for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
                             if !kept.contains(&key.0) {
@@ -145,8 +155,8 @@ impl Session {
     }
 
     fn capture_inputs<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
-        let frame = self.realtime_frame();
-        if self.saved_inputs.contains_key(&frame) {
+        let realtime = self.realtime_frame();
+        if self.saved_inputs.contains_key(&realtime) {
             return ControlFlow::Continue(());
         }
 
@@ -163,7 +173,7 @@ impl Session {
                 self.send(Message::Input(insert_into_frame, &input[..]));
                 let inputs = PlayerInputs::just_local(self.local_index, input.clone());
                 self.saved_inputs.insert(insert_into_frame, inputs);
-                if insert_into_frame == frame {
+                if insert_into_frame == realtime {
                     break;
                 } else {
                     log::warn!("missed capturing input for frame {:?}", insert_into_frame);
@@ -176,7 +186,8 @@ impl Session {
         handler: &mut H,
     ) -> ControlFlow<H::Break> {
         let last_confirmed = self.unconfirmed - 1;
-        let should_advance = self.frame_state().into_frame() < self.realtime_frame();
+        let current_frame = self.frame_state().into_frame();
+        let should_advance = current_frame < self.realtime_frame();
         if !should_advance {
             return ControlFlow::Continue(());
         }
@@ -184,7 +195,6 @@ impl Session {
         match self.saved_inputs.get(&last_confirmed) {
             None => {}
             Some(inputs) if !inputs.is_complete(self.remote_players.len()) => {
-                log::debug!("incomplete inputs: {:?}", last_confirmed);
             }
             Some(inputs) => {
                 let inputs = inputs.clone();
@@ -204,12 +214,13 @@ impl Session {
         handler: &mut H,
     ) -> ControlFlow<H::Break> {
         loop {
-            match self.frame_state().into_frame().cmp(&frame) {
+            let current_frame = self.frame_state().into_frame();
+            match current_frame.cmp(&frame) {
                 Ordering::Equal => return ControlFlow::Continue(()),
                 Ordering::Greater => {
                     let (roll_to, state) =
                         self.confirmed_states.range(..=frame).next_back().unwrap();
-                    log::debug!("rolling back to {:?}", roll_to);
+                    log::debug!("rolling back {} frames", current_frame.0 - roll_to.0);
                     handler
                         .handle_request(Request::LoadFrom(&state))
                         .always(|| {
@@ -354,6 +365,11 @@ impl Session {
             }
         }
     }
+}
+
+pub enum Player {
+    Local,
+    Remote(SocketAddr),
 }
 
 pub trait RequestHandler {

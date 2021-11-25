@@ -10,10 +10,10 @@ function clean_up {
 
 trap clean_up SIGHUP SIGINT SIGTERM
 
-RUST_LOG=debug cargo run --example boilerplate -- --local-port 7000 --local-index 0 127.0.0.1:7001 &
+cargo run --example box_game -- --local-port 7000 --local-index 0 127.0.0.1:7001 &
 proc_1=$!
 
-cargo run --example boilerplate -- --local-port 7001 --local-index 1 127.0.0.1:7000 > /dev/null 2>&1 &
+cargo run --example box_game -- --local-port 7001 --local-index 1 127.0.0.1:7000 > /dev/null 2>&1 &
 proc_2=$!
 
 wait $proc_1
