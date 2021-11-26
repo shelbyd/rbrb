@@ -1,4 +1,7 @@
-use crate::{socket::BasicUdpSocket, Frame, Interval, NonBlockingSocket, PlayerId, Session};
+use crate::{
+    socket::BasicUdpSocket, time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId,
+    Session,
+};
 
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
@@ -36,9 +39,9 @@ impl SessionBuilder {
 
         let remote_players = self
             .remote_players
-            .into_iter()
+            .iter()
             .enumerate()
-            .map(|(i, addr)| {
+            .map(|(i, &addr)| {
                 let i = i as u16;
                 if i >= local_id {
                     (addr, i + 1)
@@ -61,7 +64,7 @@ impl SessionBuilder {
             unconfirmed: Frame(1),
             remote_unconfirmed: Default::default(),
             send_interval: Interval::new(Duration::from_millis(50)),
-            shared_clock: Default::default(),
+            shared_clock: SharedClock::among_remotes(self.remote_players.iter().cloned()),
         })
     }
 }
