@@ -64,6 +64,8 @@ use request_handler::ControlFlowExt;
 pub use request_handler::{Confirmation, Request, RequestHandler};
 mod socket;
 pub use socket::{BadSocket, NonBlockingSocket};
+mod time;
+use time::Interval;
 mod utils;
 use utils::div_duration;
 
@@ -85,8 +87,7 @@ pub struct Session {
     unconfirmed: Frame,
     remote_unconfirmed: HashMap<PlayerId, Frame>,
 
-    last_send: Option<Instant>,
-    send_every: Duration,
+    send_interval: Interval,
 }
 
 impl Session {
@@ -326,15 +327,9 @@ impl Session {
     }
 
     fn send_messages(&mut self) {
-        match self.last_send {
-            Some(at) if at.elapsed() < self.send_every => return,
-            _ => {}
+        if !self.send_interval.is_time() {
+            return;
         }
-        self.last_send = Some(
-            self.last_send
-                .map(|at| at + self.send_every)
-                .unwrap_or(Instant::now()),
-        );
 
         for (player, unc) in self.remote_unconfirmed.clone() {
             let inputs = self.inputs.player_since_frame(self.local_id, unc);

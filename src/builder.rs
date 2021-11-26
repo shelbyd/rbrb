@@ -1,4 +1,4 @@
-use crate::{socket::BasicUdpSocket, Frame, NonBlockingSocket, PlayerId, Session};
+use crate::{socket::BasicUdpSocket, Frame, Interval, NonBlockingSocket, PlayerId, Session};
 
 use std::{
     collections::BTreeMap,
@@ -65,8 +65,7 @@ impl SessionBuilder {
             player_addresses: remote_players,
             unconfirmed: Frame(1),
             remote_unconfirmed: Default::default(),
-            last_send: None,
-            send_every: Duration::from_millis(50),
+            send_interval: Interval::new(Duration::from_millis(50)),
         })
     }
 }
