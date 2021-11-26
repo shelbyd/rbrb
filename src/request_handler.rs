@@ -60,7 +60,9 @@ impl MaybeMessage for () {
 
 pub trait ControlFlowExt {
     type Break;
+
     fn always<R>(self, f: impl FnOnce() -> R) -> ControlFlow<Self::Break, R>;
+    fn map_break<R>(self, f: impl FnOnce(Self::Break) -> R) -> ControlFlow<R>;
 }
 
 impl<B> ControlFlowExt for ControlFlow<B> {
@@ -70,6 +72,13 @@ impl<B> ControlFlowExt for ControlFlow<B> {
         let ret = f();
         self?;
         ControlFlow::Continue(ret)
+    }
+
+    fn map_break<R>(self, f: impl FnOnce(B) -> R) -> ControlFlow<R> {
+        match self {
+            ControlFlow::Break(b) => ControlFlow::Break(f(b)),
+            ControlFlow::Continue(c) => ControlFlow::Continue(c),
+        }
     }
 }
 

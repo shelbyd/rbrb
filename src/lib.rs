@@ -1,3 +1,5 @@
+#![allow(unstable_name_collisions)]
+
 //! A library for building RoBust RollBack-based networked games.
 //!
 //! `rbrb` is heavily inspired by [GGPO](https://www.ggpo.net/) and
@@ -50,7 +52,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     ops::ControlFlow,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 mod builder;
@@ -82,12 +84,12 @@ pub struct Session {
     player_addresses: HashMap<SocketAddr, PlayerId>,
     socket: Box<dyn NonBlockingSocket>,
 
-    started_at: Instant,
     host_at: SimulationInstant,
     unconfirmed: Frame,
     remote_unconfirmed: HashMap<PlayerId, Frame>,
 
     send_interval: Interval,
+    shared_clock: time::SharedClock,
 }
 
 impl Session {
@@ -101,7 +103,8 @@ impl Session {
 
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {
         match self.next_request_flow_inverted(handler) {
-            ControlFlow::Break(m) => ControlFlow::Continue(m),
+            ControlFlow::Break(Some(m)) => ControlFlow::Continue(m),
+            ControlFlow::Break(None) => ControlFlow::Break(()),
             ControlFlow::Continue(()) => ControlFlow::Break(()),
         }
     }
@@ -109,11 +112,11 @@ impl Session {
     fn next_request_flow_inverted<H: RequestHandler>(
         &mut self,
         mut handler: H,
-    ) -> ControlFlow<H::Break> {
+    ) -> ControlFlow<Option<H::Break>> {
         loop {
             // TODO(shelbyd): Wait for all players to connect to start the simulation.
             self.capture_inputs(&mut handler)?;
-            self.save_frame_zero(&mut handler)?;
+            self.save_frame_zero(&mut handler).map_break(Some)?;
             self.send_messages();
             self.process_incoming_messages();
             self.advance_confirmed_horizon(&mut handler)?;
@@ -127,35 +130,35 @@ impl Session {
     fn step_towards_realtime<H: RequestHandler>(
         &mut self,
         handler: &mut H,
-    ) -> ControlFlow<H::Break, bool> {
-        let frame = self.frame_state();
-        match (frame.into_frame().cmp(&self.realtime_frame()), frame) {
-            (Ordering::Greater, f) => {
-                unreachable!("advanced too far: {:?} > {:?}", f, self.realtime_frame());
+    ) -> ControlFlow<Option<H::Break>, bool> {
+        let frame = self.host_frame();
+        let clock_frame = self.clock_frame()?;
+        match (frame.into_frame().cmp(&clock_frame), frame) {
+            (Ordering::Greater, _) => {
+                unreachable!("advanced too far: {:?} > {:?}", frame, clock_frame);
             }
             (Ordering::Equal, _) => return ControlFlow::Continue(false),
             (Ordering::Less, FrameState::At(_)) => {
-                self.try_advance(handler, self.step_size)?;
+                self.try_advance(handler, self.step_size).map_break(Some)?;
                 // TODO(shelbyd): Do partial advance?
             }
             (Ordering::Less, FrameState::After(f, _)) => {
-                self.navigate_to(f, handler)?;
-                self.try_advance(handler, self.step_size)?;
+                self.navigate_to(f, handler).map_break(Some)?;
+                self.try_advance(handler, self.step_size).map_break(Some)?;
                 // TODO(shelbyd): Do partial advance?
             }
         }
-        ControlFlow::Continue(false)
+        ControlFlow::Continue(true)
     }
 
     fn save_frame_zero<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
         if self.confirmed_states.len() == 0 {
-            assert_eq!(self.frame_state(), FrameState::At(Frame(0)));
+            assert_eq!(self.host_frame(), FrameState::At(Frame(0)));
 
             let state = self.confirmed_states.entry(Frame(0)).or_default();
-            handler.handle_request(Request::SaveTo(state))
-        } else {
-            ControlFlow::Continue(())
+            handler.handle_request(Request::SaveTo(state))?;
         }
+        ControlFlow::Continue(())
     }
 
     fn should_save(&self, frame: Frame) -> bool {
@@ -172,10 +175,15 @@ impl Session {
         }
     }
 
-    fn capture_inputs<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
-        let realtime = self.realtime_frame();
+    fn capture_inputs<H: RequestHandler>(
+        &mut self,
+        handler: &mut H,
+    ) -> ControlFlow<Option<H::Break>> {
+        let realtime = self.clock_frame()?;
         if let Some(vec) = self.inputs.capture_into(realtime, self.local_id) {
-            handler.handle_request(Request::CaptureLocalInput(vec))?;
+            handler
+                .handle_request(Request::CaptureLocalInput(vec))
+                .map_break(Some)?;
         }
         ControlFlow::Continue(())
     }
@@ -183,16 +191,17 @@ impl Session {
     fn advance_confirmed_horizon<H: RequestHandler>(
         &mut self,
         handler: &mut H,
-    ) -> ControlFlow<H::Break> {
+    ) -> ControlFlow<Option<H::Break>> {
         loop {
             let last_confirmed = self.unconfirmed - 1;
-            let current_frame = self.frame_state().into_frame();
-            let should_advance = current_frame < self.realtime_frame();
+            let host_frame = self.host_frame().into_frame();
+
+            let should_advance = host_frame < self.clock_frame()?;
             if !should_advance {
                 return ControlFlow::Continue(());
             }
 
-            let behind = (current_frame.0 - last_confirmed.0) * self.step_size;
+            let behind = (host_frame.0 - last_confirmed.0) * self.step_size;
             if behind > Duration::from_secs(1) {
                 log::warn!("confirmation horizon {:?} behind", behind);
             }
@@ -204,10 +213,11 @@ impl Session {
                 }
                 Some(inputs) => {
                     let inputs = inputs.clone();
-                    self.navigate_to(last_confirmed, handler)?;
+                    self.navigate_to(last_confirmed, handler).map_break(Some)?;
 
                     self.advance_with(inputs, handler, self.step_size, true)
-                        .always(|| self.unconfirmed = self.unconfirmed + 1)?;
+                        .always(|| self.unconfirmed = self.unconfirmed + 1)
+                        .map_break(Some)?;
                 }
             }
         }
@@ -219,7 +229,7 @@ impl Session {
         handler: &mut H,
     ) -> ControlFlow<H::Break> {
         loop {
-            let current_frame = self.frame_state().into_frame();
+            let current_frame = self.host_frame().into_frame();
 
             if self.should_save(current_frame) {
                 self.clear_states();
@@ -236,11 +246,12 @@ impl Session {
                         .range(..=frame)
                         .next_back()
                         .expect("should have at least one confirmed state");
-                    log::info!(
-                        "rolling back {} frames to {:?}",
-                        current_frame.0 - roll_to.0,
-                        roll_to
-                    );
+
+                    let delta = current_frame.0 - roll_to.0;
+                    if delta * self.step_size > Duration::from_millis(300) {
+                        log::info!("rolling back {} frames to {:?}", delta, roll_to);
+                    }
+
                     handler
                         .handle_request(Request::LoadFrom(&state))
                         .always(|| {
@@ -277,7 +288,7 @@ impl Session {
     }
 
     fn do_advance<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
-        let frame = match self.frame_state() {
+        let frame = match self.host_frame() {
             FrameState::At(f) => f,
             FrameState::After(_, _) => unimplemented!("FrameState::After"),
         };
@@ -293,7 +304,7 @@ impl Session {
         handler: &mut H,
         amount: Duration,
     ) -> ControlFlow<H::Break> {
-        let frame = match self.frame_state() {
+        let frame = match self.host_frame() {
             FrameState::At(f) => f,
             FrameState::After(_, _) => unimplemented!("FrameState::After"),
         };
@@ -304,12 +315,14 @@ impl Session {
         ControlFlow::Continue(())
     }
 
-    fn realtime_frame(&self) -> Frame {
-        self.calculate_frame_state(self.started_at.elapsed())
-            .into_frame()
+    fn clock_frame<T>(&self) -> ControlFlow<Option<T>, Frame> {
+        match self.shared_clock.elapsed() {
+            Some(dur) => ControlFlow::Continue(self.calculate_frame_state(dur).into_frame()),
+            None => ControlFlow::Break(None),
+        }
     }
 
-    fn frame_state(&self) -> FrameState {
+    fn host_frame(&self) -> FrameState {
         self.calculate_frame_state(self.host_at)
     }
 
@@ -327,6 +340,9 @@ impl Session {
     }
 
     fn send_messages(&mut self) {
+        while let Some((addr, message)) = self.shared_clock.message() {
+            self.send_to_addr(&Message::Clock(message), addr);
+        }
         if !self.send_interval.is_time() {
             return;
         }
@@ -347,13 +363,17 @@ impl Session {
     }
 
     fn send_to(&mut self, message: &Message, player: PlayerId) {
-        let message = bincode::serialize(&message).expect("failed to serialize message");
         let addr = *self
             .player_addresses
             .iter()
             .find(|(_, &id)| id == player)
             .unwrap()
             .0;
+        self.send_to_addr(message, addr);
+    }
+
+    fn send_to_addr(&mut self, message: &Message, addr: SocketAddr) {
+        let message = bincode::serialize(&message).expect("failed to serialize message");
         self.socket.send(&message, addr);
     }
 
@@ -380,6 +400,9 @@ impl Session {
                 Message::Unconfirmed(frame) => {
                     let unc = self.remote_unconfirmed.entry(*player).or_insert(frame);
                     *unc = std::cmp::max(*unc, frame);
+                }
+                Message::Clock(m) => {
+                    self.shared_clock.receive_message(addr, m);
                 }
             }
         }
@@ -428,4 +451,5 @@ impl FrameState {
 enum Message {
     Inputs(BTreeMap<Frame, Vec<u8>>),
     Unconfirmed(Frame),
+    Clock(time::ClockMessage),
 }

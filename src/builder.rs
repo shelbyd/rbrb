@@ -1,10 +1,6 @@
 use crate::{socket::BasicUdpSocket, Frame, Interval, NonBlockingSocket, PlayerId, Session};
 
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
 #[derive(Default)]
 pub struct SessionBuilder {
@@ -56,7 +52,6 @@ impl SessionBuilder {
             confirmed_states: BTreeMap::default(),
             inputs: crate::InputStorage::default(),
             host_at: Duration::ZERO,
-            started_at: Instant::now(),
             step_size: self.step_size.ok_or("must provide step_size")?,
             local_id,
             socket: self
@@ -66,6 +61,7 @@ impl SessionBuilder {
             unconfirmed: Frame(1),
             remote_unconfirmed: Default::default(),
             send_interval: Interval::new(Duration::from_millis(50)),
+            shared_clock: Default::default(),
         })
     }
 }
