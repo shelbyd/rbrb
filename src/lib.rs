@@ -112,7 +112,7 @@ impl Session {
         loop {
             // TODO(shelbyd): Wait for all players to connect to start the simulation.
             self.capture_inputs(&mut handler)?;
-            self.save_confirmed_frames(&mut handler)?;
+            self.save_frame_zero(&mut handler)?;
             self.send_messages();
             self.process_incoming_messages();
             self.advance_confirmed_horizon(&mut handler)?;
@@ -146,31 +146,29 @@ impl Session {
         ControlFlow::Continue(false)
     }
 
-    fn save_confirmed_frames<H: RequestHandler>(
-        &mut self,
-        handler: &mut H,
-    ) -> ControlFlow<H::Break> {
+    fn save_frame_zero<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
         if self.confirmed_states.len() == 0 {
+            assert_eq!(self.frame_state(), FrameState::At(Frame(0)));
+
             let state = self.confirmed_states.entry(Frame(0)).or_default();
-            handler.handle_request(Request::SaveTo(state))?;
+            handler.handle_request(Request::SaveTo(state))
+        } else {
+            ControlFlow::Continue(())
         }
+    }
 
-        let current_frame = self.frame_state().into_frame();
+    fn should_save(&self, frame: Frame) -> bool {
+        exponential_keeping::kept_set(self.unconfirmed.0).contains(&frame.0)
+            && !self.confirmed_states.contains_key(&frame)
+    }
+
+    fn clear_states(&mut self) {
         let kept = exponential_keeping::kept_set(self.unconfirmed.0);
-        if kept.contains(&current_frame.0) {
-            if let None = self.confirmed_states.get(&current_frame) {
-                for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
-                    if !kept.contains(&key.0) {
-                        self.confirmed_states.remove(&key);
-                    }
-                }
-
-                let state = self.confirmed_states.entry(current_frame).or_default();
-                handler.handle_request(Request::SaveTo(state))?;
+        for key in self.confirmed_states.keys().cloned().collect::<Vec<_>>() {
+            if !kept.contains(&key.0) {
+                self.confirmed_states.remove(&key);
             }
         }
-
-        ControlFlow::Continue(())
     }
 
     fn capture_inputs<H: RequestHandler>(&mut self, handler: &mut H) -> ControlFlow<H::Break> {
@@ -191,6 +189,11 @@ impl Session {
             let should_advance = current_frame < self.realtime_frame();
             if !should_advance {
                 return ControlFlow::Continue(());
+            }
+
+            let behind = (current_frame.0 - last_confirmed.0) * self.step_size;
+            if behind > Duration::from_secs(1) {
+                log::warn!("confirmation horizon {:?} behind", behind);
             }
 
             match self.inputs(last_confirmed) {
@@ -216,6 +219,14 @@ impl Session {
     ) -> ControlFlow<H::Break> {
         loop {
             let current_frame = self.frame_state().into_frame();
+
+            if self.should_save(current_frame) {
+                self.clear_states();
+
+                let state = self.confirmed_states.entry(current_frame).or_default();
+                handler.handle_request(Request::SaveTo(state))?;
+            }
+
             match current_frame.cmp(&frame) {
                 Ordering::Equal => return ControlFlow::Continue(()),
                 Ordering::Greater => {
@@ -224,7 +235,11 @@ impl Session {
                         .range(..=frame)
                         .next_back()
                         .expect("should have at least one confirmed state");
-                    log::info!("rolling back {} frames", current_frame.0 - roll_to.0);
+                    log::info!(
+                        "rolling back {} frames to {:?}",
+                        current_frame.0 - roll_to.0,
+                        roll_to
+                    );
                     handler
                         .handle_request(Request::LoadFrom(&state))
                         .always(|| {
