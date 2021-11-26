@@ -15,7 +15,7 @@
 //!
 //! ## Core Functionality
 //!
-//! - [ ] Multi-party sync
+//! - [x] Multi-party sync
 //! - [ ] Consistent disconnection
 //! - [ ] Reconnect disconnected player
 //!
@@ -24,8 +24,8 @@
 //! - [ ] Determinism checks
 //! - [ ] Checksum propagation
 //! - [ ] Debugging failed checks
-//! - [ ] Fake a bad network
-//! - [ ] Confirmation state
+//! - [x] Fake a bad network
+//! - [x] Confirmation state
 //!
 //! ## Features
 //!
@@ -41,7 +41,6 @@
 //! - [ ] Hub and spoke network
 
 // Internal TODO list
-// - wait for everyone to connect
 // - share state checksums (probably with seahash)
 // - adjust local simulation when behind/ahead
 // - handle corrupted packets

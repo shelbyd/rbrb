@@ -30,7 +30,23 @@ struct Vec2 {
     y: f32,
 }
 
-#[macroquad::main("Basic RbRb")]
+fn window_conf() -> Conf {
+    let options = Options::from_args();
+
+    Conf {
+        window_title: format!(
+            "Basic RbRb{}",
+            if options.bad_network {
+                " [Bad Network]"
+            } else {
+                ""
+            }
+        ),
+        ..Default::default()
+    }
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
     env_logger::init();
     let options = Options::from_args();
