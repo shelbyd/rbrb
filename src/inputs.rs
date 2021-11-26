@@ -5,15 +5,33 @@ use std::collections::{BTreeMap, HashMap};
 
 pub type SerializedInput = Vec<u8>;
 
-#[derive(Default)]
 pub(crate) struct InputStorage {
     inputs: HashMap<PlayerId, SparseInputs>,
+    default: Vec<u8>,
 }
 
 impl InputStorage {
+    pub fn with_default(default: Vec<u8>) -> Self {
+        InputStorage {
+            inputs: Default::default(),
+            default,
+        }
+    }
+
     pub fn capture_into(&mut self, frame: Frame, local_id: PlayerId) -> Option<&mut Vec<u8>> {
-        let inputs = self.inputs.entry(local_id).or_default();
-        inputs.capture_into(frame)
+        if frame == Frame(0) {
+            return None;
+        }
+
+        self.sparse_mut(local_id).capture_into(frame)
+    }
+
+    pub fn sparse_mut(&mut self, id: PlayerId) -> &mut SparseInputs {
+        self.inputs.entry(id).or_insert_with(|| {
+            let mut i = SparseInputs::default();
+            i.insert(Frame(0), self.default.clone());
+            i
+        })
     }
 
     pub fn at_frame(&self, frame: Frame) -> Option<PlayerInputs> {
@@ -35,9 +53,7 @@ impl InputStorage {
         player_id: PlayerId,
         frame: Frame,
     ) -> BTreeMap<Frame, SerializedInput> {
-        self.inputs
-            .entry(player_id)
-            .or_default()
+        self.sparse_mut(player_id)
             .iter()
             .rev()
             .take_while(|(&k, _)| k >= frame)

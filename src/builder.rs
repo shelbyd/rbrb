@@ -10,6 +10,7 @@ pub struct SessionBuilder {
     remote_players: Vec<SocketAddr>,
     local_player: Option<(PlayerId, u16)>,
     step_size: Option<Duration>,
+    default_inputs: Option<Vec<u8>>,
     socket: Option<Box<dyn NonBlockingSocket>>,
 }
 
@@ -26,6 +27,11 @@ impl SessionBuilder {
 
     pub fn step_size(mut self, size: Duration) -> Self {
         self.step_size = Some(size);
+        self
+    }
+
+    pub fn default_inputs(mut self, inputs: Vec<u8>) -> Self {
+        self.default_inputs = Some(inputs);
         self
     }
 
@@ -53,7 +59,9 @@ impl SessionBuilder {
 
         Ok(Session {
             confirmed_states: BTreeMap::default(),
-            inputs: crate::InputStorage::default(),
+            inputs: crate::InputStorage::with_default(
+                self.default_inputs.ok_or("must provide default_inputs")?,
+            ),
             host_at: Duration::ZERO,
             step_size: self.step_size.ok_or("must provide step_size")?,
             local_id,
