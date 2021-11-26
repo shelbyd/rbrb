@@ -122,8 +122,7 @@ pub struct PlayerInputs<T = Confirmation<SerializedInput>> {
 
 impl PlayerInputs {
     pub fn is_fully_confirmed(&self, remote_count: usize) -> bool {
-        self.is_fully_populated(remote_count) &&
-            self.map.values().all(Confirmation::is_confirmed)
+        self.is_fully_populated(remote_count) && self.map.values().all(Confirmation::is_confirmed)
     }
 
     pub fn is_fully_populated(&self, remote_count: usize) -> bool {

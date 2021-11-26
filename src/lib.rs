@@ -42,6 +42,7 @@
 // - wait for everyone to connect
 // - share state checksums (probably with seahash)
 // - adjust local simulation when behind/ahead
+// - handle corrupted packets
 
 use serde::{Deserialize, Serialize};
 use std::{
