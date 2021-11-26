@@ -114,11 +114,10 @@ impl Session {
         mut handler: H,
     ) -> ControlFlow<Option<H::Break>> {
         loop {
-            // TODO(shelbyd): Wait for all players to connect to start the simulation.
+            self.process_incoming_messages();
+            self.send_messages();
             self.capture_inputs(&mut handler)?;
             self.save_frame_zero(&mut handler).map_break(Some)?;
-            self.send_messages();
-            self.process_incoming_messages();
             self.advance_confirmed_horizon(&mut handler)?;
 
             if !self.step_towards_realtime(&mut handler)? {

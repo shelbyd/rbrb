@@ -26,7 +26,7 @@ impl BadSocket {
             socket: BasicUdpSocket::bind(port)?,
             rng: SmallRng::from_entropy(),
             success_chance: 0.4,
-            lag: Poisson::new(20.).unwrap(),
+            lag: Poisson::new(100.).unwrap(),
             send_delays: Default::default(),
             recv_delays: Default::default(),
             owned_for_lifetime: None,

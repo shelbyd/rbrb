@@ -13,6 +13,9 @@ struct Options {
     #[structopt(long)]
     local_index: PlayerId,
 
+    #[structopt(long)]
+    bad_network: bool,
+
     remote_players: Vec<SocketAddr>,
 }
 
@@ -32,14 +35,19 @@ async fn main() {
     env_logger::init();
     let options = Options::from_args();
 
-    let mut session = SessionBuilder::default()
+    let builder = SessionBuilder::default()
         .remote_players(&options.remote_players)
         .local_player(options.local_index, options.local_port)
         .step_size(Duration::from_millis(17))
-        .default_inputs(bincode::serialize(&Vec2::default()).unwrap())
-        .with_socket(BadSocket::bind(options.local_port).unwrap())
-        .start()
-        .unwrap();
+        .default_inputs(bincode::serialize(&Vec2::default()).unwrap());
+
+    let builder = if options.bad_network {
+        builder.with_socket(BadSocket::bind(options.local_port).unwrap())
+    } else {
+        builder
+    };
+
+    let mut session = builder.start().unwrap();
 
     let mut game_state = GameState::default();
     for (id, _type) in session.players() {
