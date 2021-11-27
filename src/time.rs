@@ -133,7 +133,7 @@ impl SharedClock {
                 if *at < Instant::now() {
                     return false;
                 }
-                if duration_since(*at, new_at).abs() < Duration::from_millis(10) {
+                if duration_since(*at, new_at).abs() < Duration::from_millis(100) {
                     return false;
                 }
                 if *at > new_at {
