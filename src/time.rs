@@ -3,9 +3,10 @@ use serde::*;
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     net::SocketAddr,
-    ops::{Add, Sub},
     time::{Duration, Instant},
 };
+
+use crate::utils::Signed;
 
 #[derive(Debug)]
 pub struct Interval {
@@ -26,6 +27,10 @@ impl Interval {
         }
         true
     }
+
+    pub fn set_every(&mut self, every: Duration) {
+        self.every = every;
+    }
 }
 
 #[derive(Debug)]
@@ -33,6 +38,10 @@ pub struct SharedClock {
     state: ClockState,
     remotes: HashMap<SocketAddr, NetworkQuality>,
     queue: VecDeque<(SocketAddr, ClockMessage)>,
+
+    remote_elapsed: HashMap<SocketAddr, (Signed<Duration>, Instant)>,
+    drift: Signed<Duration>,
+    adjust_drift: Interval,
 }
 
 impl SharedClock {
@@ -44,6 +53,10 @@ impl SharedClock {
                 .map(|addr| (addr, Default::default()))
                 .collect(),
             queue: Default::default(),
+
+            remote_elapsed: Default::default(),
+            drift: Signed::Pos(Duration::ZERO),
+            adjust_drift: Interval::new(Duration::from_millis(100)),
         }
     }
 
@@ -75,10 +88,10 @@ impl SharedClock {
             self.update_start_time(Instant::now() + confident_start_in);
         }
 
+        let message = ClockMessage::Elapsed(self.signed_elapsed()?);
         match &mut self.state {
             ClockState::Start {
                 unacked,
-                at,
                 sync_start,
                 ..
             } => {
@@ -86,9 +99,15 @@ impl SharedClock {
                     return None;
                 }
 
-                let message = ClockMessage::Start(duration_since(*at, Instant::now()));
-                self.queue
-                    .extend(unacked.iter().map(|addr| (*addr, message.clone())));
+                if unacked.len() == 0 {
+                    sync_start.set_every(Duration::from_millis(500));
+                    self.queue
+                        .extend(self.remotes.keys().map(|addr| (*addr, message.clone())));
+                } else {
+                    sync_start.set_every(Duration::from_millis(50));
+                    self.queue
+                        .extend(unacked.iter().map(|addr| (*addr, message.clone())));
+                }
                 self.queue.pop_front()
             }
             ClockState::Synchronizing => None,
@@ -101,20 +120,23 @@ impl SharedClock {
                 self.remotes.get_mut(&from).unwrap().receive_message(m);
             }
 
-            ClockMessage::Start(dur) => {
-                log::info!("remote {} starting in {:?}", from, dur);
+            ClockMessage::Elapsed(amt) => {
+                self.record_remote_elapsed(from, amt);
+                self.adjust_drift();
 
                 if let Some(rtt) = self.remotes[&from].average_rtt() {
-                    let delta = dur.stretch(rtt / 2);
-                    let start_at = delta.add_to(Instant::now());
+                    let true_elapsed = amt - (rtt / 2).into();
+                    let start_at = true_elapsed.sub_from(Instant::now());
 
-                    if !self.update_start_time(start_at) {
+                    if self.update_start_time(start_at) {
+                        log::info!("now starting in {:?}", self.signed_elapsed().unwrap());
+                    } else {
                         match &mut self.state {
-                            ClockState::Start { unacked, at, .. } => {
+                            ClockState::Start { unacked, .. } => {
                                 unacked.remove(&from);
                                 if rand::thread_rng().gen() {
                                     let message =
-                                        ClockMessage::Start(duration_since(*at, Instant::now()));
+                                        ClockMessage::Elapsed(self.signed_elapsed().unwrap());
                                     self.queue.push_back((from, message));
                                 }
                             }
@@ -126,6 +148,45 @@ impl SharedClock {
         }
     }
 
+    fn record_remote_elapsed(&mut self, from: SocketAddr, elapsed: Signed<Duration>) {
+        let existing = self
+            .remote_elapsed
+            .entry(from)
+            .or_insert_with(|| (elapsed, Instant::now()));
+        if elapsed <= existing.0 {
+            return;
+        }
+
+        existing.0 = elapsed;
+        existing.1 = Instant::now();
+    }
+
+    fn adjust_drift(&mut self) {
+        if !self.adjust_drift.is_time() {
+            return;
+        }
+        let local_elapsed = match self.signed_elapsed() {
+            Some(e) => e,
+            None => return,
+        };
+        let avg_delta = self
+            .remote_elapsed
+            .iter()
+            .filter_map(|(addr, &(elapsed, at))| {
+                let remote_elapsed =
+                    elapsed + at.elapsed().into() + (self.remotes[addr].average_rtt()? / 2).into();
+                let delta = local_elapsed - remote_elapsed;
+                Some(delta)
+            })
+            .sum::<Signed<Duration>>()
+            / (self.remote_elapsed.len() as u32);
+
+        let max_change = Duration::from_millis(1);
+        let change = -avg_delta.clamp(Signed::Neg(max_change), Signed::Pos(max_change));
+        self.drift = self.drift + change;
+        log::info!("drift: {:?}", self.drift);
+    }
+
     fn update_start_time(&mut self, new_at: Instant) -> bool {
         match &self.state {
             ClockState::Synchronizing => {}
@@ -133,7 +194,7 @@ impl SharedClock {
                 if *at < Instant::now() {
                     return false;
                 }
-                if duration_since(*at, new_at).abs() < Duration::from_millis(100) {
+                if duration_since(*at, new_at).abs() < Duration::from_millis(200) {
                     return false;
                 }
                 if *at > new_at {
@@ -155,9 +216,16 @@ impl SharedClock {
     }
 
     pub fn elapsed(&self) -> Option<Duration> {
+        self.signed_elapsed()?.pos()
+    }
+
+    fn signed_elapsed(&self) -> Option<Signed<Duration>> {
         match self.state {
             ClockState::Synchronizing => None,
-            ClockState::Start { at, .. } => Instant::now().checked_duration_since(at),
+            ClockState::Start { at, .. } => {
+                let naive = duration_since(Instant::now(), at);
+                Some(naive + self.drift)
+            }
         }
     }
 }
@@ -172,47 +240,8 @@ fn duration_since(a: Instant, b: Instant) -> Signed<Duration> {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 pub enum ClockMessage {
-    Start(Signed<Duration>),
+    Elapsed(Signed<Duration>),
     NetworkAnalysis(NetworkAnalysisMessage),
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
-pub enum Signed<T> {
-    Pos(T),
-    Neg(T),
-}
-
-impl<T> Signed<T> {
-    fn abs(self) -> T {
-        match self {
-            Signed::Pos(t) => t,
-            Signed::Neg(t) => t,
-        }
-    }
-
-    fn map<U>(self, f: impl FnOnce(T) -> U) -> Signed<U> {
-        match self {
-            Signed::Pos(t) => Signed::Pos(f(t)),
-            Signed::Neg(t) => Signed::Neg(f(t)),
-        }
-    }
-
-    fn stretch<U>(self, other: U) -> Signed<T::Output>
-    where
-        T: Add<U>,
-    {
-        self.map(|t| t + other)
-    }
-
-    fn add_to<U, R>(self, other: U) -> R
-    where
-        U: Add<T, Output = R> + Sub<T, Output = R>,
-    {
-        match self {
-            Signed::Pos(t) => other + t,
-            Signed::Neg(t) => other - t,
-        }
-    }
 }
 
 #[derive(Debug)]
