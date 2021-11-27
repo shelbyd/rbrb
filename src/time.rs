@@ -199,7 +199,7 @@ impl SharedClock {
                 if *at < Instant::now() {
                     return false;
                 }
-                if duration_since(*at, new_at).abs() < Duration::from_millis(200) {
+                if duration_since(*at, new_at).abs() < Duration::from_millis(400) {
                     return false;
                 }
                 if *at > new_at {
@@ -221,8 +221,8 @@ impl SharedClock {
     }
 
     pub fn elapsed(&self) -> Option<Duration> {
-        let naive = self.signed_elapsed()?.pos()?;
-        let never_decrease = std::cmp::max(naive, self.last_elapsed.get());
+        let correct = self.signed_elapsed()?.pos()?;
+        let never_decrease = std::cmp::max(correct, self.last_elapsed.get());
         self.last_elapsed.set(never_decrease);
         Some(never_decrease)
     }
@@ -231,8 +231,8 @@ impl SharedClock {
         match self.state {
             ClockState::Synchronizing => None,
             ClockState::Start { at, .. } => {
-                let naive = duration_since(Instant::now(), at);
-                Some(naive + self.drift)
+                let only_local = duration_since(Instant::now(), at);
+                Some(only_local + self.drift)
             }
         }
     }

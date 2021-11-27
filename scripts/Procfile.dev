@@ -1,2 +1,4 @@
-player_0: cargo run --example box_game -- --local-port 7000 --local-index 0 127.0.0.1:7001
-player_1: sleep 1 && cargo run --example box_game -- --local-port 7001 --local-index 1 127.0.0.1:7000
+player_0: cargo run --example box_game -- --local-port 7000 --local-index 0 127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003
+player_1: sleep 1 && cargo run --example box_game -- --local-port 7001 --local-index 1 127.0.0.1:7000 127.0.0.1:7002 127.0.0.1:7003
+player_2: sleep 2 && cargo run --example box_game -- --local-port 7002 --local-index 2 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7003
+player_3: sleep 3 && cargo run --example box_game -- --local-port 7003 --local-index 3 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002
