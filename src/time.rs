@@ -1,6 +1,7 @@
 use rand::Rng;
 use serde::*;
 use std::{
+    cell::Cell,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     net::SocketAddr,
     time::{Duration, Instant},
@@ -40,6 +41,7 @@ pub struct SharedClock {
     queue: VecDeque<(SocketAddr, ClockMessage)>,
 
     remote_elapsed: HashMap<SocketAddr, (Signed<Duration>, Instant)>,
+    last_elapsed: Cell<Duration>,
     drift: Signed<Duration>,
     adjust_drift: Interval,
 }
@@ -55,6 +57,7 @@ impl SharedClock {
             queue: Default::default(),
 
             remote_elapsed: Default::default(),
+            last_elapsed: Cell::new(Duration::ZERO),
             drift: Signed::Pos(Duration::ZERO),
             adjust_drift: Interval::new(Duration::from_millis(100)),
         }
@@ -184,7 +187,6 @@ impl SharedClock {
         let max_change = Duration::from_millis(1);
         let change = -avg_delta.clamp(Signed::Neg(max_change), Signed::Pos(max_change));
         self.drift = self.drift + change;
-        log::info!("drift: {:?}", self.drift);
     }
 
     fn update_start_time(&mut self, new_at: Instant) -> bool {
@@ -216,10 +218,13 @@ impl SharedClock {
     }
 
     pub fn elapsed(&self) -> Option<Duration> {
-        self.signed_elapsed()?.pos()
+        let naive = self.signed_elapsed()?.pos()?;
+        let never_decrease = std::cmp::max(naive, self.last_elapsed.get());
+        self.last_elapsed.set(never_decrease);
+        Some(never_decrease)
     }
 
-    fn signed_elapsed(&self) -> Option<Signed<Duration>> {
+    pub fn signed_elapsed(&self) -> Option<Signed<Duration>> {
         match self.state {
             ClockState::Synchronizing => None,
             ClockState::Start { at, .. } => {
@@ -227,6 +232,10 @@ impl SharedClock {
                 Some(naive + self.drift)
             }
         }
+    }
+
+    pub fn drift(&self) -> Signed<Duration> {
+        self.drift
     }
 }
 

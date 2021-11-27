@@ -3,21 +3,27 @@ use std::{
     net::{SocketAddr, UdpSocket},
 };
 
+use crate::stats::SocketStats;
+
 mod bad;
 pub use bad::*;
 
 pub trait NonBlockingSocket {
     fn send(&mut self, message: &[u8], addr: SocketAddr);
     fn recv(&mut self) -> Option<(SocketAddr, &[u8])>;
+
+    fn stats(&self) -> Option<SocketStats> {
+        None
+    }
 }
 
-pub(crate) struct BasicUdpSocket {
+pub struct BasicUdpSocket {
     socket: UdpSocket,
     buffer: Vec<u8>,
 }
 
 impl BasicUdpSocket {
-    pub(crate) fn bind(port: u16) -> std::io::Result<Self> {
+    pub fn bind(port: u16) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(("0.0.0.0", port))?;
         socket.set_nonblocking(true)?;
         Ok(BasicUdpSocket {

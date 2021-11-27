@@ -64,7 +64,9 @@ mod request_handler;
 use request_handler::ControlFlowExt;
 pub use request_handler::{Confirmation, Request, RequestHandler};
 mod socket;
-pub use socket::{BadSocket, NonBlockingSocket};
+pub use socket::{BadSocket, BasicUdpSocket, NonBlockingSocket};
+mod stats;
+pub use stats::{BandwidthRecordingSocket, NetworkStats};
 mod time;
 use time::Interval;
 mod utils;
@@ -98,6 +100,14 @@ impl Session {
             .iter()
             .map(|(s, id)| (*id, Player::Remote(*s)));
         [(self.local_id, Player::Local)].into_iter().chain(remote)
+    }
+
+    pub fn network_stats(&self) -> NetworkStats {
+        NetworkStats {
+            drift: self.shared_clock.drift(),
+            elapsed: self.shared_clock.signed_elapsed().unwrap_or_default(),
+            socket: self.socket.stats(),
+        }
     }
 
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {

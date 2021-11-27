@@ -25,7 +25,7 @@ pub fn div_duration(numerator: Duration, denominator: Duration) -> (u32, Duratio
     (min, numerator - (denominator * min))
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[derive(Deserialize, Serialize, Clone, Copy)]
 pub enum Signed<T> {
     Pos(T),
     Neg(T),
@@ -81,6 +81,25 @@ impl<T> Signed<T> {
             Signed::Pos(t) => Some(t),
             Signed::Neg(_) => None,
         }
+    }
+}
+
+impl<T> std::fmt::Debug for Signed<T>
+where
+    T: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Signed::Pos(t) => {
+                f.write_str("+")?;
+                t.fmt(f)?;
+            }
+            Signed::Neg(t) => {
+                f.write_str("-")?;
+                t.fmt(f)?;
+            }
+        }
+        Ok(())
     }
 }
 

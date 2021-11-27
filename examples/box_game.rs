@@ -1,4 +1,7 @@
-use rbrb::{BadSocket, PlayerId, PlayerInputs, Request, SessionBuilder};
+use rbrb::{
+    BadSocket, BandwidthRecordingSocket, BasicUdpSocket, PlayerId, PlayerInputs, Request,
+    SessionBuilder,
+};
 
 use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -58,9 +61,11 @@ async fn main() {
         .default_inputs(bincode::serialize(&Vec2::default()).unwrap());
 
     let builder = if options.bad_network {
-        builder.with_socket(BadSocket::bind(options.local_port).unwrap())
+        let s = BandwidthRecordingSocket::new(BadSocket::bind(options.local_port).unwrap());
+        builder.with_socket(s)
     } else {
-        builder
+        let s = BandwidthRecordingSocket::new(BasicUdpSocket::bind(options.local_port).unwrap());
+        builder.with_socket(s)
     };
 
     let mut session = builder.start().unwrap();
@@ -68,8 +73,8 @@ async fn main() {
     let mut game_state = GameState::default();
     for (id, _type) in session.players() {
         game_state.box_positions.entry(id).or_insert_with(|| Vec2 {
-            x: id as f32 * 30. + 100.,
-            y: 60.,
+            x: id as f32 * 30. + 200.,
+            y: 120.,
         });
     }
     loop {
@@ -121,6 +126,22 @@ async fn main() {
 
         for pos in game_state.box_positions.values() {
             draw_rectangle(pos.x, pos.y, 10., 10., WHITE);
+        }
+
+        let network_stats = session.network_stats();
+        let mut texts = vec![
+            format!("Elapsed: {:?}", network_stats.elapsed),
+            format!("Drift: {:?}", network_stats.drift),
+        ];
+        match network_stats.socket {
+            Some(stats) => {
+                texts.push(format!("Out: {:?}/s", stats.outgoing_bytes));
+                texts.push(format!("In: {:?}/s", stats.incoming_bytes));
+            }
+            None => {}
+        }
+        for (i, text) in texts.into_iter().enumerate() {
+            draw_text(&text, 0., 16. * (i + 1) as f32, 16., WHITE);
         }
 
         next_frame().await;
