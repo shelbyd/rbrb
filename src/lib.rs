@@ -42,8 +42,8 @@
 
 // Internal TODO list
 // - share state checksums (probably with seahash)
-// - adjust local simulation when behind/ahead
 // - handle corrupted packets
+// - make drift adjustment more robust
 
 use serde::{Deserialize, Serialize};
 use std::{

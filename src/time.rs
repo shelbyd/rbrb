@@ -184,8 +184,11 @@ impl SharedClock {
             .sum::<Signed<Duration>>()
             / (self.remote_elapsed.len() as u32);
 
+        let weighted_adjust = self.drift.map(|_| Duration::from_micros(100));
+        let delta = -avg_delta + weighted_adjust;
+
         let max_change = Duration::from_millis(1);
-        let change = -avg_delta.clamp(Signed::Neg(max_change), Signed::Pos(max_change));
+        let change = delta.clamp(Signed::Neg(max_change), Signed::Pos(max_change));
         self.drift = self.drift + change;
     }
 
