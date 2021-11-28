@@ -1,7 +1,7 @@
 use rand::Rng;
 use serde::*;
 use std::{
-    cell::Cell,
+    sync::RwLock,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     net::SocketAddr,
     time::{Duration, Instant},
@@ -41,7 +41,7 @@ pub struct SharedClock {
     queue: VecDeque<(SocketAddr, ClockMessage)>,
 
     remote_elapsed: HashMap<SocketAddr, (Signed<Duration>, Instant)>,
-    last_elapsed: Cell<Duration>,
+    last_elapsed: RwLock<Duration>,
     drift: Signed<Duration>,
     adjust_drift: Interval,
 }
@@ -57,7 +57,7 @@ impl SharedClock {
             queue: Default::default(),
 
             remote_elapsed: Default::default(),
-            last_elapsed: Cell::new(Duration::ZERO),
+            last_elapsed: RwLock::new(Duration::ZERO),
             drift: Signed::Pos(Duration::ZERO),
             adjust_drift: Interval::new(Duration::from_millis(100)),
         }
@@ -222,8 +222,9 @@ impl SharedClock {
 
     pub fn elapsed(&self) -> Option<Duration> {
         let correct = self.signed_elapsed()?.pos()?;
-        let never_decrease = std::cmp::max(correct, self.last_elapsed.get());
-        self.last_elapsed.set(never_decrease);
+        let mut lock = self.last_elapsed.write().unwrap();
+        let never_decrease = std::cmp::max(correct, *lock);
+        *lock = never_decrease;
         Some(never_decrease)
     }
 

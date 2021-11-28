@@ -8,7 +8,7 @@ use crate::stats::SocketStats;
 mod bad;
 pub use bad::*;
 
-pub trait NonBlockingSocket {
+pub trait NonBlockingSocket: Send + Sync + 'static {
     fn send(&mut self, message: &[u8], addr: SocketAddr);
     fn recv(&mut self) -> Option<(SocketAddr, &[u8])>;
 
