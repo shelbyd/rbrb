@@ -34,9 +34,11 @@
 //!   - [ ] Headless
 //! - [ ] Spectators
 //!   - [ ] Drop in/out
+//! - [ ] Multiple local players
 //!
 //! ## Performance
 //!
+//! - [x] Sparse inputs
 //! - [ ] Input delta encoding
 //! - [ ] Hub and spoke network
 
@@ -44,6 +46,7 @@
 // - share state checksums (probably with seahash)
 // - handle corrupted packets
 // - make drift adjustment more robust
+// - documentation
 
 use serde::{Deserialize, Serialize};
 use std::{
