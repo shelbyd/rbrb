@@ -56,7 +56,7 @@ async fn main() {
 
     let builder = SessionBuilder::default()
         .remote_players(&options.remote_players)
-        .local_player(options.local_index, options.local_port)
+        .local_player(options.local_index)
         .step_size(Duration::from_millis(17))
         .default_inputs(bincode::serialize(&Vec2::default()).unwrap());
 

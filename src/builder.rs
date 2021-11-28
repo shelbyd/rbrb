@@ -1,5 +1,5 @@
 use crate::{
-    socket::BasicUdpSocket, time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId,
+    time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId,
     Session,
 };
 
@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 #[derive(Default)]
 pub struct SessionBuilder {
     remote_players: Vec<SocketAddr>,
-    local_player: Option<(PlayerId, u16)>,
+    local_player: Option<PlayerId>,
     step_size: Option<Duration>,
     default_inputs: Option<Vec<u8>>,
     socket: Option<Box<dyn NonBlockingSocket>>,
@@ -20,8 +20,8 @@ impl SessionBuilder {
         self
     }
 
-    pub fn local_player(mut self, index: PlayerId, port: u16) -> Self {
-        self.local_player = Some((index, port));
+    pub fn local_player(mut self, index: PlayerId) -> Self {
+        self.local_player = Some(index);
         self
     }
 
@@ -41,7 +41,7 @@ impl SessionBuilder {
     }
 
     pub fn start(self) -> Result<Session, String> {
-        let (local_id, port) = self.local_player.ok_or("must provide local_player")?;
+        let local_id = self.local_player.ok_or("must provide local_player")?;
 
         let remote_players = self
             .remote_players
@@ -67,7 +67,7 @@ impl SessionBuilder {
             local_id,
             socket: self
                 .socket
-                .unwrap_or_else(|| Box::new(BasicUdpSocket::bind(port).unwrap())),
+                .ok_or("must provide socket")?,
             player_addresses: remote_players,
             unconfirmed: Frame(1),
             remote_unconfirmed: Default::default(),
