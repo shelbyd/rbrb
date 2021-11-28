@@ -81,13 +81,13 @@ pub(crate) struct SparseInputs {
 }
 
 impl SparseInputs {
-    fn at(&self, frame: Frame) -> Option<Confirmation<&SerializedInput>> {
+    fn at(&self, frame: Frame) -> Option<Confirmed<&SerializedInput>> {
         let (before_frame, before_value) = self.map.range(..=frame).next_back()?;
         let after = self.map.range(frame..).next();
         match after {
-            _ if *before_frame == frame => Some(Confirmation::Confirmed(before_value)),
-            Some(_) => Some(Confirmation::Confirmed(before_value)),
-            None => Some(Confirmation::Unconfirmed(before_value)),
+            _ if *before_frame == frame => Some(Confirmed::Confirmed(before_value)),
+            Some(_) => Some(Confirmed::Confirmed(before_value)),
+            None => Some(Confirmed::Unconfirmed(before_value)),
         }
     }
 
@@ -132,13 +132,13 @@ impl Default for SparseInputs {
 }
 
 #[derive(Debug, Clone)]
-pub struct PlayerInputs<T = Confirmation<SerializedInput>> {
+pub struct PlayerInputs<T = Confirmed<SerializedInput>> {
     map: HashMap<PlayerId, T>,
 }
 
 impl PlayerInputs {
     pub fn is_fully_confirmed(&self, remote_count: usize) -> bool {
-        self.is_fully_populated(remote_count) && self.map.values().all(Confirmation::is_confirmed)
+        self.is_fully_populated(remote_count) && self.map.values().all(Confirmed::is_confirmed)
     }
 
     pub fn is_fully_populated(&self, remote_count: usize) -> bool {
@@ -149,8 +149,8 @@ impl PlayerInputs {
     }
 }
 
-impl<T> PlayerInputs<Confirmation<T>> {
-    pub fn deep_map<U>(self, mut f: impl FnMut(T) -> U) -> PlayerInputs<Confirmation<U>> {
+impl<T> PlayerInputs<Confirmed<T>> {
+    pub fn deep_map<U>(self, mut f: impl FnMut(T) -> U) -> PlayerInputs<Confirmed<U>> {
         PlayerInputs {
             map: self
                 .map
@@ -186,30 +186,37 @@ impl<T> Default for PlayerInputs<T> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Confirmation<T> {
+pub enum Confirmed<T> {
     Confirmed(T),
     Unconfirmed(T),
 }
 
-impl<T> Confirmation<T> {
+impl<T> Confirmed<T> {
     pub fn into_inner(self) -> T {
         match self {
-            Confirmation::Confirmed(t) => t,
-            Confirmation::Unconfirmed(t) => t,
+            Confirmed::Confirmed(t) => t,
+            Confirmed::Unconfirmed(t) => t,
         }
     }
 
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Confirmation<U> {
+    pub fn as_inner(&self) -> &T {
         match self {
-            Confirmation::Confirmed(t) => Confirmation::Confirmed(f(t)),
-            Confirmation::Unconfirmed(t) => Confirmation::Unconfirmed(f(t)),
+            Confirmed::Confirmed(t) => &t,
+            Confirmed::Unconfirmed(t) => &t,
+        }
+    }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Confirmed<U> {
+        match self {
+            Confirmed::Confirmed(t) => Confirmed::Confirmed(f(t)),
+            Confirmed::Unconfirmed(t) => Confirmed::Unconfirmed(f(t)),
         }
     }
 
     pub fn is_confirmed(&self) -> bool {
         match self {
-            Confirmation::Confirmed(_) => true,
-            Confirmation::Unconfirmed(_) => false,
+            Confirmed::Confirmed(_) => true,
+            Confirmed::Unconfirmed(_) => false,
         }
     }
 }

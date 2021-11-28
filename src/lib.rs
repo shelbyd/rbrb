@@ -62,7 +62,7 @@ pub use builder::SessionBuilder;
 mod exponential_keeping;
 mod inputs;
 use inputs::InputStorage;
-pub use inputs::{PlayerInputs, SerializedInput};
+pub use inputs::{Confirmed, PlayerInputs, SerializedInput};
 mod request_handler;
 use request_handler::ControlFlowExt;
 pub use request_handler::{Confirmation, Request, RequestHandler};
@@ -111,6 +111,10 @@ impl Session {
             elapsed: self.shared_clock.signed_elapsed().unwrap_or_default(),
             socket: self.socket.stats(),
         }
+    }
+
+    pub fn local_player_id(&self) -> PlayerId {
+        self.local_id
     }
 
     pub fn next_request<H: RequestHandler>(&mut self, handler: H) -> ControlFlow<(), H::Break> {

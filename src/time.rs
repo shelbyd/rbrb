@@ -1,9 +1,9 @@
 use rand::Rng;
 use serde::*;
 use std::{
-    sync::RwLock,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     net::SocketAddr,
+    sync::RwLock,
     time::{Duration, Instant},
 };
 

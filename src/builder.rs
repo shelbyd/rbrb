@@ -1,7 +1,4 @@
-use crate::{
-    time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId,
-    Session,
-};
+use crate::{time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId, Session};
 
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
@@ -65,9 +62,7 @@ impl SessionBuilder {
             host_at: Duration::ZERO,
             step_size: self.step_size.ok_or("must provide step_size")?,
             local_id,
-            socket: self
-                .socket
-                .ok_or("must provide socket")?,
+            socket: self.socket.ok_or("must provide socket")?,
             player_addresses: remote_players,
             unconfirmed: Frame(1),
             remote_unconfirmed: Default::default(),
