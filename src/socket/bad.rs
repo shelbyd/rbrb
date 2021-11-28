@@ -8,8 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub struct BadSocket {
-    socket: BasicUdpSocket,
+pub struct BadSocket<S: NonBlockingSocket> {
+    socket: S,
+
     rng: SmallRng,
     success_chance: f64,
     lag: Poisson<f32>,
@@ -20,17 +21,23 @@ pub struct BadSocket {
     owned_for_lifetime: Option<(SocketAddr, Vec<u8>)>,
 }
 
-impl BadSocket {
+impl BadSocket<BasicUdpSocket> {
     pub fn bind(port: u16) -> std::io::Result<Self> {
-        Ok(Self {
-            socket: BasicUdpSocket::bind(port)?,
+        Ok(Self::new(BasicUdpSocket::bind(port)?))
+    }
+}
+
+impl<S: NonBlockingSocket> BadSocket<S> {
+    pub fn new(socket: S) -> Self {
+        Self {
+            socket,
             rng: SmallRng::from_entropy(),
             success_chance: 0.4,
             lag: Poisson::new(100.).unwrap(),
             send_delays: Default::default(),
             recv_delays: Default::default(),
             owned_for_lifetime: None,
-        })
+        }
     }
 
     fn packet_behavior(&mut self) -> PacketBehavior {
@@ -57,7 +64,7 @@ fn next_ready<T>(map: &mut BTreeMap<Instant, T>) -> Option<T> {
     }
 }
 
-impl NonBlockingSocket for BadSocket {
+impl<S: NonBlockingSocket> NonBlockingSocket for BadSocket<S> {
     fn send(&mut self, message: &[u8], addr: SocketAddr) {
         while let Some((message, addr)) = next_ready(&mut self.send_delays) {
             self.socket.send(&message, addr);
