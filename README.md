@@ -15,7 +15,7 @@ state is consitent between players and deterministic on the same logical update.
 
 ### Core Functionality
 
-- [ ] Multi-party sync
+- [x] Multi-party sync
 - [ ] Consistent disconnection
 - [ ] Reconnect disconnected player
 
@@ -24,8 +24,8 @@ state is consitent between players and deterministic on the same logical update.
 - [ ] Determinism checks
 - [ ] Checksum propagation
 - [ ] Debugging failed checks
-- [ ] Fake a bad network
-- [ ] Confirmation state
+- [x] Fake a bad network
+- [x] Confirmation state
 
 ### Features
 
@@ -34,9 +34,11 @@ state is consitent between players and deterministic on the same logical update.
   - [ ] Headless
 - [ ] Spectators
   - [ ] Drop in/out
+- [ ] Multiple local players
 
 ### Performance
 
+- [x] Sparse inputs
 - [ ] Input delta encoding
 - [ ] Hub and spoke network
 
