@@ -5,7 +5,7 @@ use crate::Frame;
 mod warn_remote_mismatched_checksum;
 pub use warn_remote_mismatched_checksum::*;
 
-pub trait SessionPlugin {
+pub trait SessionPlugin: Send + Sync + 'static {
     fn id(&self) -> &str;
 
     fn on_confirmed_frame(&mut self, _frame: Frame, _serialized: &[u8]) {}

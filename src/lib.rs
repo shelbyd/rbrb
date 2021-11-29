@@ -22,7 +22,7 @@
 //! ## Robustness
 //!
 //! - [ ] Determinism checks
-//! - [ ] Checksum propagation
+//! - [x] Checksum propagation
 //! - [ ] Debugging failed checks
 //! - [x] Fake a bad network
 //! - [x] Confirmation state
@@ -43,7 +43,6 @@
 //! - [ ] Hub and spoke network
 
 // Internal TODO list
-// - share state checksums (probably with seahash)
 // - handle corrupted packets
 // - make drift adjustment more robust
 // - documentation
@@ -491,4 +490,23 @@ enum Message {
     Unconfirmed(Frame),
     Clock(time::ClockMessage),
     Plugin(String, Vec<u8>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_is_sync() {
+        fn is_sync<T: Sync>() -> bool { true }
+
+        assert!(is_sync::<Session>());
+    }
+
+    #[test]
+    fn session_is_send() {
+        fn is_send<T: Send>() -> bool { true }
+
+        assert!(is_send::<Session>());
+    }
 }
