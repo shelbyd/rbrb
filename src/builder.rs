@@ -1,4 +1,6 @@
-use crate::{time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId, Session};
+use crate::{
+    time::SharedClock, Frame, Interval, NonBlockingSocket, PlayerId, Session, SessionPlugin,
+};
 
 use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
@@ -68,6 +70,16 @@ impl SessionBuilder {
             remote_unconfirmed: Default::default(),
             send_interval: Interval::new(Duration::from_millis(50)),
             shared_clock: SharedClock::among_remotes(self.remote_players.iter().cloned()),
+            plugins: {
+                [
+                    Box::new(crate::plugin::WarnRemoteMismatchedChecksum::with_addrs(
+                        self.remote_players.iter().cloned(),
+                    )) as Box<dyn SessionPlugin>,
+                ]
+                .into_iter()
+                .map(|p| (p.id().to_owned(), p))
+                .collect()
+            },
         })
     }
 }

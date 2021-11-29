@@ -9,7 +9,7 @@
 //!
 //! This library assumes your game is a deterministic `Fn(&State, Set<Input>) -> State`.
 //! We (will) have an additional testing mode that will spend extra cycles on checking that the
-//! state is consitent between players and deterministic on the same logical update.
+//! state is consistent between players and deterministic on the same logical update.
 //!
 //! # Roadmap
 //!
@@ -63,6 +63,8 @@ mod exponential_keeping;
 mod inputs;
 use inputs::InputStorage;
 pub use inputs::{Confirmed, PlayerInputs, SerializedInput};
+mod plugin;
+use plugin::SessionPlugin;
 mod request_handler;
 use request_handler::ControlFlowExt;
 pub use request_handler::{Confirmation, Request, RequestHandler};
@@ -94,6 +96,8 @@ pub struct Session {
 
     send_interval: Interval,
     shared_clock: time::SharedClock,
+
+    plugins: HashMap<String, Box<dyn SessionPlugin>>,
 }
 
 impl Session {
@@ -250,7 +254,11 @@ impl Session {
                 self.clear_states();
 
                 let state = self.confirmed_states.entry(current_frame).or_default();
-                handler.handle_request(Request::SaveTo(state))?;
+                handler.handle_request(Request::SaveTo(state)).always(|| {
+                    for plugin in self.plugins.values_mut() {
+                        plugin.on_confirmed_frame(current_frame, state);
+                    }
+                })?;
             }
 
             match current_frame.cmp(&frame) {
@@ -269,9 +277,7 @@ impl Session {
 
                     handler
                         .handle_request(Request::LoadFrom(&state))
-                        .always(|| {
-                            self.host_at = self.step_size * roll_to.0;
-                        })?;
+                        .always(|| self.host_at = self.step_size * roll_to.0)?;
                 }
                 Ordering::Less => {
                     self.do_advance(handler)?;
@@ -358,6 +364,16 @@ impl Session {
         while let Some((addr, message)) = self.shared_clock.message() {
             self.send_to_addr(&Message::Clock(message), addr);
         }
+
+        let plugin_messages = self
+            .plugins
+            .iter_mut()
+            .flat_map(|(id, p)| p.messages().into_iter().map(move |m| (id.clone(), m)))
+            .collect::<Vec<_>>();
+        for (id, (addr, message)) in plugin_messages {
+            self.send_to_addr(&Message::Plugin(id, message), addr);
+        }
+
         if !self.send_interval.is_time() {
             return;
         }
@@ -419,6 +435,13 @@ impl Session {
                 Message::Clock(m) => {
                     self.shared_clock.receive_message(addr, m);
                 }
+                Message::Plugin(id, m) => {
+                    if let Some(p) = self.plugins.get_mut(&id) {
+                        p.receive(addr, m);
+                    } else {
+                        log::warn!("received message for unrecognized plugin: {}", id);
+                    }
+                }
             }
         }
     }
@@ -429,9 +452,9 @@ pub enum Player {
     Remote(SocketAddr),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize, Hash)]
 #[serde(transparent)]
-struct Frame(u32);
+pub struct Frame(u32);
 
 impl core::ops::Add<u32> for Frame {
     type Output = Frame;
@@ -467,4 +490,5 @@ enum Message {
     Inputs(BTreeMap<Frame, Vec<u8>>),
     Unconfirmed(Frame),
     Clock(time::ClockMessage),
+    Plugin(String, Vec<u8>),
 }
