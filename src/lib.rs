@@ -61,7 +61,7 @@ pub use builder::SessionBuilder;
 mod exponential_keeping;
 mod inputs;
 use inputs::InputStorage;
-pub use inputs::{Confirmed, PlayerInputs, SerializedInput};
+pub use inputs::{ConfirmationStatus, PlayerInputs, SerializedInput};
 mod plugin;
 use plugin::SessionPlugin;
 mod request_handler;
@@ -446,6 +446,7 @@ impl Session {
     }
 }
 
+#[derive(Debug)]
 pub enum Player {
     Local,
     Remote(SocketAddr),
@@ -498,14 +499,18 @@ mod tests {
 
     #[test]
     fn session_is_sync() {
-        fn is_sync<T: Sync>() -> bool { true }
+        fn is_sync<T: Sync>() -> bool {
+            true
+        }
 
         assert!(is_sync::<Session>());
     }
 
     #[test]
     fn session_is_send() {
-        fn is_send<T: Send>() -> bool { true }
+        fn is_send<T: Send>() -> bool {
+            true
+        }
 
         assert!(is_send::<Session>());
     }
