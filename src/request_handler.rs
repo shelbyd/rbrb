@@ -92,6 +92,7 @@ pub enum Request<'s> {
         amount: Duration,
         inputs: PlayerInputs,
         confirmed: Confirmation,
+        current_frame: u32,
     },
     CaptureLocalInput(&'s mut SerializedInput),
 }

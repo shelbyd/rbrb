@@ -233,7 +233,7 @@ impl Session {
                     let inputs = inputs.clone();
                     self.navigate_to(last_confirmed, handler).map_break(Some)?;
 
-                    self.advance_with(inputs, handler, self.step_size, true)
+                    self.advance_with(inputs, handler, self.step_size, last_confirmed, true)
                         .always(|| self.unconfirmed = self.unconfirmed + 1)
                         .map_break(Some)?;
                 }
@@ -290,11 +290,13 @@ impl Session {
         inputs: PlayerInputs,
         handler: &mut H,
         amount: Duration,
+        current_frame: Frame,
         first_confirm: bool,
     ) -> ControlFlow<H::Break> {
         handler
             .handle_request(Request::Advance {
                 amount,
+                current_frame: current_frame.0,
                 confirmed: if first_confirm {
                     Confirmation::First
                 } else if inputs.is_fully_confirmed(self.player_addresses.len()) {
@@ -316,7 +318,7 @@ impl Session {
             .inputs(frame)
             .expect(&format!("did not have inputs for frame: {:?}", frame));
 
-        self.advance_with(inputs, handler, self.step_size, false)
+        self.advance_with(inputs, handler, self.step_size, frame, false)
     }
 
     fn try_advance<H: RequestHandler>(
@@ -330,7 +332,7 @@ impl Session {
         };
 
         if let Some(inputs) = self.inputs(frame) {
-            self.advance_with(inputs, handler, amount, false)?;
+            self.advance_with(inputs, handler, amount, frame, false)?;
         }
         ControlFlow::Continue(())
     }
